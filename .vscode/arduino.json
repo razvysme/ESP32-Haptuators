@@ -2,5 +2,6 @@
     "board": "esp32:esp32:esp32wrover",
     "configuration": "PartitionScheme=default,FlashMode=qio,FlashFreq=80,UploadSpeed=921600,DebugLevel=none",
     "port": "COM6",
-    "sketch": "CI_Haptics.ino"
+    "sketch": "CI_Haptics.ino",
+    "output": "/build"
 }
