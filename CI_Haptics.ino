@@ -27,13 +27,16 @@ const int recv_port = 10000;
 // -----------------------------------------------------------------------------
 unsigned int delayTime = 25;
 unsigned long timeNow = 0;
-int trigger = 0;
 const float sampleRate = 48000;
-float pitch = 40;
 String serialInput = "";
 WM8978 wm8978; // the DAC
 OscWiFi osc; // the OSC client
 percussion faustDSP(sampleRate, 8); //the Faust synth
+
+//temp variables
+float volume = 63.0f;
+int trigger = 0;
+float pitch = 40;
 // -----------------------------------------------------------------------------
 // Setup
 // -----------------------------------------------------------------------------
@@ -130,8 +133,8 @@ void configureDAC()
   wm8978.micGain(30);
   wm8978.auxGain(0);
   wm8978.lineinGain(0);
-  wm8978.spkVolSet(0);
-  wm8978.hpVolSet(100,100);
+  wm8978.spkVolSet(volume);
+  wm8978.hpVolSet(volume,volume);
   wm8978.i2sCfg(2,0); 
 }
 
@@ -144,6 +147,16 @@ void configureOverSerial()
       serialInput.remove( 0, 5 );
       delayTime = serialInput.substring( 0, 5 ).toInt();
       Serial.println(delayTime);
+    }
+
+    
+    if ( serialInput.startsWith( "volume " ) )
+    {
+      serialInput.remove( 0, 6 );
+      volume = serialInput.substring( 0, 6 ).toFloat();
+      Serial.println(volume);
+      //wm8978.spkVolSet(volume);
+      wm8978.hpVolSet(volume,volume);
     }
     
     if ( serialInput.startsWith( "pitch " ) )

@@ -1,7 +1,7 @@
 // Options:
 /* ------------------------------------------------------------
 name: "percussion"
-Code generated with Faust 2.23.6 (https://faust.grame.fr)
+Code generated with Faust 2.23.10 (https://faust.grame.fr)
 Compilation options: -lang cpp -scal -ftz 0
 ------------------------------------------------------------ */
 
@@ -1062,792 +1062,7 @@ class esp32audio : public audio {
 # pragma GCC diagnostic ignored "-Wunused-parameter"
 #endif
 
-/************************** BEGIN ring-buffer.h **************************/
-/*
-  Copyright (C) 2000 Paul Davis
-  Copyright (C) 2003 Rohan Drape
-  Copyright (C) 2016 GRAME (renaming for internal use)
-
-  This program is free software; you can redistribute it and/or modify
-  it under the terms of the GNU Lesser General Public License as published by
-  the Free Software Foundation; either version 2.1 of the License, or
-  (at your option) any later version.
-
-  This program is distributed in the hope that it will be useful,
-  but WITHOUT ANY WARRANTY; without even the implied warranty of
-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-  GNU Lesser General Public License for more details.
-
-  You should have received a copy of the GNU Lesser General Public License
-  along with this program; if not, write to the Free Software
-  Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
-
-  ISO/POSIX C version of Paul Davis's lock free ringbuffer C++ code.
-  This is safe for the case of one read thread and one write thread.
-*/
-
-#ifndef __ring_buffer__
-#define __ring_buffer__
-
-#include <stdlib.h>
-#include <string.h>
-
-#ifdef WIN32
-# pragma warning (disable: 4334)
-#else
-# pragma GCC diagnostic ignored "-Wunused-function"
-#endif
-
-typedef struct {
-    char *buf;
-    size_t len;
-}
-ringbuffer_data_t;
-
-typedef struct {
-    char *buf;
-    volatile size_t write_ptr;
-    volatile size_t read_ptr;
-    size_t	size;
-    size_t	size_mask;
-    int	mlocked;
-}
-ringbuffer_t;
-
-static ringbuffer_t *ringbuffer_create(size_t sz);
-static void ringbuffer_free(ringbuffer_t *rb);
-static void ringbuffer_get_read_vector(const ringbuffer_t *rb,
-                                         ringbuffer_data_t *vec);
-static void ringbuffer_get_write_vector(const ringbuffer_t *rb,
-                                          ringbuffer_data_t *vec);
-static size_t ringbuffer_read(ringbuffer_t *rb, char *dest, size_t cnt);
-static size_t ringbuffer_peek(ringbuffer_t *rb, char *dest, size_t cnt);
-static void ringbuffer_read_advance(ringbuffer_t *rb, size_t cnt);
-static size_t ringbuffer_read_space(const ringbuffer_t *rb);
-static int ringbuffer_mlock(ringbuffer_t *rb);
-static void ringbuffer_reset(ringbuffer_t *rb);
-static void ringbuffer_reset_size (ringbuffer_t * rb, size_t sz);
-static size_t ringbuffer_write(ringbuffer_t *rb, const char *src,
-                                 size_t cnt);
-static void ringbuffer_write_advance(ringbuffer_t *rb, size_t cnt);
-static size_t ringbuffer_write_space(const ringbuffer_t *rb);
-
-/* Create a new ringbuffer to hold at least `sz' bytes of data. The
-   actual buffer size is rounded up to the next power of two. */
-
-static ringbuffer_t *
-ringbuffer_create (size_t sz)
-{
-	size_t power_of_two;
-	ringbuffer_t *rb;
-
-	if ((rb = (ringbuffer_t *) malloc (sizeof (ringbuffer_t))) == NULL) {
-		return NULL;
-	}
-
-	for (power_of_two = 1u; 1u << power_of_two < sz; power_of_two++);
-
-	rb->size = 1u << power_of_two;
-	rb->size_mask = rb->size;
-	rb->size_mask -= 1;
-	rb->write_ptr = 0;
-	rb->read_ptr = 0;
-	if ((rb->buf = (char *) malloc (rb->size)) == NULL) {
-		free (rb);
-		return NULL;
-	}
-	rb->mlocked = 0;
-
-	return rb;
-}
-
-/* Free all data associated with the ringbuffer `rb'. */
-
-static void
-ringbuffer_free (ringbuffer_t * rb)
-{
-#ifdef USE_MLOCK
-	if (rb->mlocked) {
-		munlock (rb->buf, rb->size);
-	}
-#endif /* USE_MLOCK */
-	free (rb->buf);
-	free (rb);
-}
-
-/* Lock the data block of `rb' using the system call 'mlock'.  */
-
-static int
-ringbuffer_mlock (ringbuffer_t * rb)
-{
-#ifdef USE_MLOCK
-	if (mlock (rb->buf, rb->size)) {
-		return -1;
-	}
-#endif /* USE_MLOCK */
-	rb->mlocked = 1;
-	return 0;
-}
-
-/* Reset the read and write pointers to zero. This is not thread
-   safe. */
-
-static void
-ringbuffer_reset (ringbuffer_t * rb)
-{
-	rb->read_ptr = 0;
-	rb->write_ptr = 0;
-    memset(rb->buf, 0, rb->size);
-}
-
-/* Reset the read and write pointers to zero. This is not thread
-   safe. */
-
-static void
-ringbuffer_reset_size (ringbuffer_t * rb, size_t sz)
-{
-    rb->size = sz;
-    rb->size_mask = rb->size;
-    rb->size_mask -= 1;
-    rb->read_ptr = 0;
-    rb->write_ptr = 0;
-}
-
-/* Return the number of bytes available for reading. This is the
-   number of bytes in front of the read pointer and behind the write
-   pointer.  */
-
-static size_t
-ringbuffer_read_space (const ringbuffer_t * rb)
-{
-	size_t w, r;
-
-	w = rb->write_ptr;
-	r = rb->read_ptr;
-
-	if (w > r) {
-		return w - r;
-	} else {
-		return (w - r + rb->size) & rb->size_mask;
-	}
-}
-
-/* Return the number of bytes available for writing. This is the
-   number of bytes in front of the write pointer and behind the read
-   pointer.  */
-
-static size_t
-ringbuffer_write_space (const ringbuffer_t * rb)
-{
-	size_t w, r;
-
-	w = rb->write_ptr;
-	r = rb->read_ptr;
-
-	if (w > r) {
-		return ((r - w + rb->size) & rb->size_mask) - 1;
-	} else if (w < r) {
-		return (r - w) - 1;
-	} else {
-		return rb->size - 1;
-	}
-}
-
-/* The copying data reader. Copy at most `cnt' bytes from `rb' to
-   `dest'.  Returns the actual number of bytes copied. */
-
-static size_t
-ringbuffer_read (ringbuffer_t * rb, char *dest, size_t cnt)
-{
-	size_t free_cnt;
-	size_t cnt2;
-	size_t to_read;
-	size_t n1, n2;
-
-	if ((free_cnt = ringbuffer_read_space (rb)) == 0) {
-		return 0;
-	}
-
-	to_read = cnt > free_cnt ? free_cnt : cnt;
-
-	cnt2 = rb->read_ptr + to_read;
-
-	if (cnt2 > rb->size) {
-		n1 = rb->size - rb->read_ptr;
-		n2 = cnt2 & rb->size_mask;
-	} else {
-		n1 = to_read;
-		n2 = 0;
-	}
-
-	memcpy (dest, &(rb->buf[rb->read_ptr]), n1);
-	rb->read_ptr = (rb->read_ptr + n1) & rb->size_mask;
-
-	if (n2) {
-		memcpy (dest + n1, &(rb->buf[rb->read_ptr]), n2);
-		rb->read_ptr = (rb->read_ptr + n2) & rb->size_mask;
-	}
-
-	return to_read;
-}
-
-/* The copying data reader w/o read pointer advance. Copy at most
-   `cnt' bytes from `rb' to `dest'.  Returns the actual number of bytes
-   copied. */
-
-static size_t
-ringbuffer_peek (ringbuffer_t * rb, char *dest, size_t cnt)
-{
-	size_t free_cnt;
-	size_t cnt2;
-	size_t to_read;
-	size_t n1, n2;
-	size_t tmp_read_ptr;
-
-	tmp_read_ptr = rb->read_ptr;
-
-	if ((free_cnt = ringbuffer_read_space (rb)) == 0) {
-		return 0;
-	}
-
-	to_read = cnt > free_cnt ? free_cnt : cnt;
-
-	cnt2 = tmp_read_ptr + to_read;
-
-	if (cnt2 > rb->size) {
-		n1 = rb->size - tmp_read_ptr;
-		n2 = cnt2 & rb->size_mask;
-	} else {
-		n1 = to_read;
-		n2 = 0;
-	}
-
-	memcpy (dest, &(rb->buf[tmp_read_ptr]), n1);
-	tmp_read_ptr = (tmp_read_ptr + n1) & rb->size_mask;
-
-	if (n2) {
-		memcpy (dest + n1, &(rb->buf[tmp_read_ptr]), n2);
-	}
-
-	return to_read;
-}
-
-/* The copying data writer. Copy at most `cnt' bytes to `rb' from
-   `src'.  Returns the actual number of bytes copied. */
-
-static size_t
-ringbuffer_write (ringbuffer_t * rb, const char *src, size_t cnt)
-{
-	size_t free_cnt;
-	size_t cnt2;
-	size_t to_write;
-	size_t n1, n2;
-
-	if ((free_cnt = ringbuffer_write_space (rb)) == 0) {
-		return 0;
-	}
-
-	to_write = cnt > free_cnt ? free_cnt : cnt;
-
-	cnt2 = rb->write_ptr + to_write;
-
-	if (cnt2 > rb->size) {
-		n1 = rb->size - rb->write_ptr;
-		n2 = cnt2 & rb->size_mask;
-	} else {
-		n1 = to_write;
-		n2 = 0;
-	}
-
-	memcpy (&(rb->buf[rb->write_ptr]), src, n1);
-	rb->write_ptr = (rb->write_ptr + n1) & rb->size_mask;
-
-	if (n2) {
-		memcpy (&(rb->buf[rb->write_ptr]), src + n1, n2);
-		rb->write_ptr = (rb->write_ptr + n2) & rb->size_mask;
-	}
-
-	return to_write;
-}
-
-/* Advance the read pointer `cnt' places. */
-
-static void
-ringbuffer_read_advance (ringbuffer_t * rb, size_t cnt)
-{
-	size_t tmp = (rb->read_ptr + cnt) & rb->size_mask;
-	rb->read_ptr = tmp;
-}
-
-/* Advance the write pointer `cnt' places. */
-
-static void
-ringbuffer_write_advance (ringbuffer_t * rb, size_t cnt)
-{
-	size_t tmp = (rb->write_ptr + cnt) & rb->size_mask;
-	rb->write_ptr = tmp;
-}
-
-/* The non-copying data reader. `vec' is an array of two places. Set
-   the values at `vec' to hold the current readable data at `rb'. If
-   the readable data is in one segment the second segment has zero
-   length. */
-
-static void
-ringbuffer_get_read_vector (const ringbuffer_t * rb,
-				 ringbuffer_data_t * vec)
-{
-	size_t free_cnt;
-	size_t cnt2;
-	size_t w, r;
-
-	w = rb->write_ptr;
-	r = rb->read_ptr;
-
-	if (w > r) {
-		free_cnt = w - r;
-	} else {
-		free_cnt = (w - r + rb->size) & rb->size_mask;
-	}
-
-	cnt2 = r + free_cnt;
-
-	if (cnt2 > rb->size) {
-
-		/* Two part vector: the rest of the buffer after the current write
-		   ptr, plus some from the start of the buffer. */
-
-		vec[0].buf = &(rb->buf[r]);
-		vec[0].len = rb->size - r;
-		vec[1].buf = rb->buf;
-		vec[1].len = cnt2 & rb->size_mask;
-
-	} else {
-
-		/* Single part vector: just the rest of the buffer */
-
-		vec[0].buf = &(rb->buf[r]);
-		vec[0].len = free_cnt;
-		vec[1].len = 0;
-	}
-}
-
-/* The non-copying data writer. `vec' is an array of two places. Set
-   the values at `vec' to hold the current writeable data at `rb'. If
-   the writeable data is in one segment the second segment has zero
-   length. */
-
-static void
-ringbuffer_get_write_vector (const ringbuffer_t * rb,
-				  ringbuffer_data_t * vec)
-{
-	size_t free_cnt;
-	size_t cnt2;
-	size_t w, r;
-
-	w = rb->write_ptr;
-	r = rb->read_ptr;
-
-	if (w > r) {
-		free_cnt = ((r - w + rb->size) & rb->size_mask) - 1;
-	} else if (w < r) {
-		free_cnt = (r - w) - 1;
-	} else {
-		free_cnt = rb->size - 1;
-	}
-
-	cnt2 = w + free_cnt;
-
-	if (cnt2 > rb->size) {
-
-		/* Two part vector: the rest of the buffer after the current write
-		   ptr, plus some from the start of the buffer. */
-
-		vec[0].buf = &(rb->buf[w]);
-		vec[0].len = rb->size - w;
-		vec[1].buf = rb->buf;
-		vec[1].len = cnt2 & rb->size_mask;
-	} else {
-		vec[0].buf = &(rb->buf[w]);
-		vec[0].len = free_cnt;
-		vec[1].len = 0;
-	}
-}
-
-#endif // __ring_buffer__
-/**************************  END  ring-buffer.h **************************/
-
-/*******************************************************************************
- * GUI : Abstract Graphic User Interface
- * Provides additional mechanisms to synchronize widgets and zones. Widgets
- * should both reflect the value of a zone and allow to change this value.
- ******************************************************************************/
-
-class uiItem;
-class GUI;
-struct clist;
-
-typedef void (*uiCallback)(FAUSTFLOAT val, void* data);
-
-struct uiItemBase
-{
-    
-    uiItemBase(GUI* ui, FAUSTFLOAT* zone)
-    {
-        assert(ui);
-        assert(zone);
-    }
-    
-    virtual ~uiItemBase()
-    {}
-    
-    virtual void modifyZone(FAUSTFLOAT v) = 0;
-    virtual void modifyZone(double date, FAUSTFLOAT v) {}
-    virtual double cache() = 0;
-    virtual void reflectZone() = 0;
-};
-
-
-static void deleteClist(clist* cl);
-
-struct clist : public std::list<uiItemBase*>
-{
-    
-    virtual ~clist()
-    {
-        deleteClist(this);
-    }
-        
-};
-
-static void createUiCallbackItem(GUI* ui, FAUSTFLOAT* zone, uiCallback foo, void* data);
-
-typedef std::map<FAUSTFLOAT*, clist*> zmap;
-
-typedef std::map<FAUSTFLOAT*, ringbuffer_t*> ztimedmap;
-
-class GUI : public UI
-{
-		
-    private:
-     
-        static std::list<GUI*> fGuiList;
-        zmap fZoneMap;
-        bool fStopped;
-        
-     public:
-            
-        GUI():fStopped(false)
-        {	
-            fGuiList.push_back(this);
-        }
-        
-        virtual ~GUI() 
-        {   
-            // delete all items
-            for (auto& it : fZoneMap) {
-                delete it.second;
-            }
-            // suppress 'this' in static fGuiList
-            fGuiList.remove(this);
-        }
-
-        // -- registerZone(z,c) : zone management
-        
-        void registerZone(FAUSTFLOAT* z, uiItemBase* c)
-        {
-            if (fZoneMap.find(z) == fZoneMap.end()) fZoneMap[z] = new clist();
-            fZoneMap[z]->push_back(c);
-        }
- 
-        void updateZone(FAUSTFLOAT* z)
-        {
-            FAUSTFLOAT v = *z;
-            clist* cl = fZoneMap[z];
-            for (auto& c : *cl) {
-                if (c->cache() != v) c->reflectZone();
-            }
-        }
-    
-        void updateAllZones()
-        {
-            for (auto& m : fZoneMap) {
-                updateZone(m.first);
-            }
-        }
-    
-        static void updateAllGuis()
-        {
-            for (auto& g : fGuiList) {
-                g->updateAllZones();
-            }
-        }
-    
-        static void runAllGuis()
-        {
-            for (auto& g : fGuiList) {
-                g->run();
-            }
-        }
-    
-        void addCallback(FAUSTFLOAT* zone, uiCallback foo, void* data)
-        {
-            createUiCallbackItem(this, zone, foo, data);
-        }
-
-        virtual void show() {};	
-        virtual bool run() { return false; };
-
-        virtual void stop() { fStopped = true; }
-        bool stopped() { return fStopped; }
-    
-        // -- widget's layouts
-        
-        virtual void openTabBox(const char* label) {};
-        virtual void openHorizontalBox(const char* label) {}
-        virtual void openVerticalBox(const char* label) {}
-        virtual void closeBox() {}
-        
-        // -- active widgets
-        
-        virtual void addButton(const char* label, FAUSTFLOAT* zone) {}
-        virtual void addCheckButton(const char* label, FAUSTFLOAT* zone) {}
-        virtual void addVerticalSlider(const char* label, FAUSTFLOAT* zone, FAUSTFLOAT init, FAUSTFLOAT min, FAUSTFLOAT max, FAUSTFLOAT step) {}
-        virtual void addHorizontalSlider(const char* label, FAUSTFLOAT* zone, FAUSTFLOAT init, FAUSTFLOAT min, FAUSTFLOAT max, FAUSTFLOAT step) {}
-        virtual void addNumEntry(const char* label, FAUSTFLOAT* zone, FAUSTFLOAT init, FAUSTFLOAT min, FAUSTFLOAT max, FAUSTFLOAT step) {}
-    
-        // -- passive widgets
-        
-        virtual void addHorizontalBargraph(const char* label, FAUSTFLOAT* zone, FAUSTFLOAT min, FAUSTFLOAT max) {}
-        virtual void addVerticalBargraph(const char* label, FAUSTFLOAT* zone, FAUSTFLOAT min, FAUSTFLOAT max) {}
-    
-        // -- soundfiles
-    
-        virtual void addSoundfile(const char* label, const char* filename, Soundfile** sf_zone) {}
-    
-        // -- metadata declarations
-
-        virtual void declare(FAUSTFLOAT*, const char*, const char*) {}
-    
-        // Static global for timed zones, shared between all UI that will set timed values
-        static ztimedmap gTimedZoneMap;
-
-};
-
-/**
- * User Interface Item: abstract definition
- */
-
-template <typename REAL>
-class uiTypedItem : public uiItemBase
-{
-    protected:
-        
-        GUI* fGUI;
-        REAL* fZone;
-        REAL fCache;
-        
-        uiTypedItem(GUI* ui, REAL* zone):uiItemBase(ui, static_cast<FAUSTFLOAT*>(zone)),
-        fGUI(ui), fZone(zone), fCache(REAL(-123456.654321))
-        {
-            ui->registerZone(zone, this);
-        }
-        
-    public:
-        
-        virtual ~uiTypedItem()
-        {}
-    
-        void modifyZone(REAL v)
-        {
-            fCache = v;
-            if (*fZone != v) {
-                *fZone = v;
-                fGUI->updateZone(fZone);
-            }
-        }
-    
-        double cache() { return fCache; }
-    
-};
-
-class uiItem : public uiTypedItem<FAUSTFLOAT> {
-    
-    protected:
-    
-        uiItem(GUI* ui, FAUSTFLOAT* zone):uiTypedItem<FAUSTFLOAT>(ui, zone)
-        {}
-
-    public:
-
-        virtual ~uiItem() 
-        {}
-
-		void modifyZone(FAUSTFLOAT v)
-		{
-			fCache = v;
-			if (*fZone != v) {
-				*fZone = v;
-				fGUI->updateZone(fZone);
-			}
-		}
-
-};
-
-/**
- * User Interface item owned (and so deleted) by external code
- */
-
-class uiOwnedItem : public uiItem {
-    
-    protected:
-    
-        uiOwnedItem(GUI* ui, FAUSTFLOAT* zone):uiItem(ui, zone)
-        {}
-    
-     public:
-    
-        virtual ~uiOwnedItem()
-        {}
-    
-        virtual void reflectZone() {}
-};
-
-/**
- * Callback Item
- */
-
-class uiCallbackItem : public uiItem {
-    
-    protected:
-    
-        uiCallback fCallback;
-        void* fData;
-    
-    public:
-    
-        uiCallbackItem(GUI* ui, FAUSTFLOAT* zone, uiCallback foo, void* data)
-        : uiItem(ui, zone), fCallback(foo), fData(data) {}
-        
-        virtual void reflectZone() 
-        {		
-            FAUSTFLOAT v = *fZone;
-            fCache = v; 
-            fCallback(v, fData);	
-        }
-};
-
-/**
- *  For timestamped control
- */
-
-struct DatedControl {
-    
-    double fDate;
-    FAUSTFLOAT fValue;
-    
-    DatedControl(double d = 0., FAUSTFLOAT v = FAUSTFLOAT(0)):fDate(d), fValue(v) {}
-    
-};
-
-/**
- * Base class for timed items
- */
-
-class uiTimedItem : public uiItem
-{
-    
-    protected:
-        
-        bool fDelete;
-        
-    public:
-    
-        using uiItem::modifyZone;
-        
-        uiTimedItem(GUI* ui, FAUSTFLOAT* zone):uiItem(ui, zone)
-        {
-            if (GUI::gTimedZoneMap.find(fZone) == GUI::gTimedZoneMap.end()) {
-                GUI::gTimedZoneMap[fZone] = ringbuffer_create(8192);
-                fDelete = true;
-            } else {
-                fDelete = false;
-            }
-        }
-        
-        virtual ~uiTimedItem()
-        {
-            ztimedmap::iterator it;
-            if (fDelete && ((it = GUI::gTimedZoneMap.find(fZone)) != GUI::gTimedZoneMap.end())) {
-                ringbuffer_free((*it).second);
-                GUI::gTimedZoneMap.erase(it);
-            }
-        }
-        
-        virtual void modifyZone(double date, FAUSTFLOAT v)
-        {
-            size_t res;
-            DatedControl dated_val(date, v);
-            if ((res = ringbuffer_write(GUI::gTimedZoneMap[fZone], (const char*)&dated_val, sizeof(DatedControl))) != sizeof(DatedControl)) {
-                std::cerr << "ringbuffer_write error DatedControl" << std::endl;
-            }
-        }
-    
-};
-
-/**
- * Allows to group a set of zones
- */
-
-class uiGroupItem : public uiItem
-{
-    protected:
-    
-        std::vector<FAUSTFLOAT*> fZoneMap;
-
-    public:
-    
-        uiGroupItem(GUI* ui, FAUSTFLOAT* zone):uiItem(ui, zone)
-        {}
-        virtual ~uiGroupItem() 
-        {}
-        
-        virtual void reflectZone() 
-        {
-            FAUSTFLOAT v = *fZone;
-            fCache = v;
-            
-            // Update all zones of the same group
-            for (auto& it : fZoneMap) {
-                *it = v;
-            }
-        }
-        
-        void addZone(FAUSTFLOAT* zone) { fZoneMap.push_back(zone); }
-
-};
-
-// Can not be defined as method in the classes
-
-static void createUiCallbackItem(GUI* ui, FAUSTFLOAT* zone, uiCallback foo, void* data)
-{
-    new uiCallbackItem(ui, zone, foo, data);
-}
-
-static void deleteClist(clist* cl)
-{
-    for (auto& it : *cl) {
-        uiOwnedItem* owned = dynamic_cast<uiOwnedItem*>(it);
-        // owned items are deleted by external code
-        if (!owned) {
-            delete it;
-        }
-    }
-}
-
-#endif
-/**************************  END  GUI.h **************************/
-/************************** BEGIN JSONUI.h **************************/
+/************************** BEGIN ValueConverter.h **************************/
 /************************************************************************
  FAUST Architecture File
  Copyright (C) 2003-2017 GRAME, Centre National de Creation Musicale
@@ -1870,532 +1085,545 @@ static void deleteClist(clist* cl)
  that work under terms of your choice, so long as this FAUST
  architecture section is not modified.
  ************************************************************************/
- 
-#ifndef FAUST_JSONUI_H
-#define FAUST_JSONUI_H
 
+#ifndef __ValueConverter__
+#define __ValueConverter__
+
+/***************************************************************************************
+								ValueConverter.h
+                            (GRAME, Copyright 2015-2019)
+
+Set of conversion objects used to map user interface values (for example a gui slider
+delivering values between 0 and 1) to faust values (for example a vslider between
+20 and 20000) using a log scale.
+
+-- Utilities
+
+Range(lo,hi) : clip a value x between lo and hi
+Interpolator(lo,hi,v1,v2) : Maps a value x between lo and hi to a value y between v1 and v2
+Interpolator3pt(lo,mi,hi,v1,vm,v2) : Map values between lo mid hi to values between v1 vm v2
+
+-- Value Converters
+
+ValueConverter::ui2faust(x)
+ValueConverter::faust2ui(x)
+
+-- ValueConverters used for sliders depending of the scale
+
+LinearValueConverter(umin, umax, fmin, fmax)
+LinearValueConverter2(lo, mi, hi, v1, vm, v2) using 2 segments
+LogValueConverter(umin, umax, fmin, fmax)
+ExpValueConverter(umin, umax, fmin, fmax)
+
+-- ValueConverters used for accelerometers based on 3 points
+
+AccUpConverter(amin, amid, amax, fmin, fmid, fmax)		-- curve 0
+AccDownConverter(amin, amid, amax, fmin, fmid, fmax)	-- curve 1
+AccUpDownConverter(amin, amid, amax, fmin, fmid, fmax)	-- curve 2
+AccDownUpConverter(amin, amid, amax, fmin, fmid, fmax)	-- curve 3
+
+-- lists of ZoneControl are used to implement accelerometers metadata for each axes
+
+ZoneControl(zone, valueConverter) : a zone with an accelerometer data converter
+
+-- ZoneReader are used to implement screencolor metadata
+
+ZoneReader(zone, valueConverter) : a zone with a data converter
+
+****************************************************************************************/
+
+#include <float.h>
+#include <algorithm>    // std::max
+#include <cmath>
 #include <vector>
-#include <map>
-#include <string>
-#include <iostream>
-#include <iomanip>
-#include <sstream>
-#include <algorithm>
+#include <assert.h>
+
+//--------------------------------------------------------------------------------------
+// Interpolator(lo,hi,v1,v2)
+// Maps a value x between lo and hi to a value y between v1 and v2
+// y = v1 + (x-lo)/(hi-lo)*(v2-v1)
+// y = v1 + (x-lo) * coef   		with coef = (v2-v1)/(hi-lo)
+// y = v1 + x*coef - lo*coef
+// y = v1 - lo*coef + x*coef
+// y = offset + x*coef				with offset = v1 - lo*coef
+//--------------------------------------------------------------------------------------
+class Interpolator
+{
+    private:
+
+        //--------------------------------------------------------------------------------------
+        // Range(lo,hi) clip a value between lo and hi
+        //--------------------------------------------------------------------------------------
+        struct Range
+        {
+            double fLo;
+            double fHi;
+
+            Range(double x, double y) : fLo(std::min<double>(x,y)), fHi(std::max<double>(x,y)) {}
+            double operator()(double x) { return (x<fLo) ? fLo : (x>fHi) ? fHi : x; }
+        };
 
 
-/*******************************************************************************
- * JSONUI : Faust User Interface
- * This class produce a complete JSON decription of the DSP instance.
- ******************************************************************************/
+        Range fRange;
+        double fCoef;
+        double fOffset;
 
-template <typename REAL>
-class JSONUIReal : public PathBuilder, public Meta, public UIReal<REAL>
+    public:
+
+        Interpolator(double lo, double hi, double v1, double v2) : fRange(lo,hi)
+        {
+            if (hi != lo) {
+                // regular case
+                fCoef = (v2-v1)/(hi-lo);
+                fOffset = v1 - lo*fCoef;
+            } else {
+                // degenerate case, avoids division by zero
+                fCoef = 0;
+                fOffset = (v1+v2)/2;
+            }
+        }
+        double operator()(double v)
+        {
+            double x = fRange(v);
+            return  fOffset + x*fCoef;
+        }
+
+        void getLowHigh(double& amin, double& amax)
+        {
+            amin = fRange.fLo;
+            amax = fRange.fHi;
+        }
+};
+
+//--------------------------------------------------------------------------------------
+// Interpolator3pt(lo,mi,hi,v1,vm,v2)
+// Map values between lo mid hi to values between v1 vm v2
+//--------------------------------------------------------------------------------------
+class Interpolator3pt
+{
+
+    private:
+
+        Interpolator fSegment1;
+        Interpolator fSegment2;
+        double fMid;
+
+    public:
+
+        Interpolator3pt(double lo, double mi, double hi, double v1, double vm, double v2) :
+            fSegment1(lo, mi, v1, vm),
+            fSegment2(mi, hi, vm, v2),
+            fMid(mi) {}
+        double operator()(double x) { return  (x < fMid) ? fSegment1(x) : fSegment2(x); }
+
+        void getMappingValues(double& amin, double& amid, double& amax)
+        {
+            fSegment1.getLowHigh(amin, amid);
+            fSegment2.getLowHigh(amid, amax);
+        }
+};
+
+//--------------------------------------------------------------------------------------
+// Abstract ValueConverter class. Converts values between UI and Faust representations
+//--------------------------------------------------------------------------------------
+class ValueConverter
+{
+
+    public:
+
+        virtual ~ValueConverter() {}
+        virtual double ui2faust(double x) = 0;
+        virtual double faust2ui(double x) = 0;
+};
+
+//--------------------------------------------------------------------------------------
+// A converter than can be updated
+//--------------------------------------------------------------------------------------
+
+class UpdatableValueConverter : public ValueConverter {
+    
+    protected:
+        
+        bool fActive;
+        
+    public:
+        
+        UpdatableValueConverter():fActive(true)
+        {}
+        virtual ~UpdatableValueConverter()
+        {}
+        
+        virtual void setMappingValues(double amin, double amid, double amax, double min, double init, double max) = 0;
+        virtual void getMappingValues(double& amin, double& amid, double& amax) = 0;
+        
+        void setActive(bool on_off) { fActive = on_off; }
+        bool getActive() { return fActive; }
+    
+};
+
+
+//--------------------------------------------------------------------------------------
+// Linear conversion between ui and Faust values
+//--------------------------------------------------------------------------------------
+class LinearValueConverter : public ValueConverter
+{
+    
+    private:
+        
+        Interpolator fUI2F;
+        Interpolator fF2UI;
+        
+    public:
+        
+        LinearValueConverter(double umin, double umax, double fmin, double fmax) :
+            fUI2F(umin,umax,fmin,fmax), fF2UI(fmin,fmax,umin,umax)
+        {}
+        
+        LinearValueConverter() : fUI2F(0.,0.,0.,0.), fF2UI(0.,0.,0.,0.)
+        {}
+        virtual double ui2faust(double x) { return fUI2F(x); }
+        virtual double faust2ui(double x) { return fF2UI(x); }
+    
+};
+
+//--------------------------------------------------------------------------------------
+// Two segments linear conversion between ui and Faust values
+//--------------------------------------------------------------------------------------
+class LinearValueConverter2 : public UpdatableValueConverter
+{
+    
+    private:
+    
+        Interpolator3pt fUI2F;
+        Interpolator3pt fF2UI;
+        
+    public:
+    
+        LinearValueConverter2(double amin, double amid, double amax, double min, double init, double max) :
+            fUI2F(amin, amid, amax, min, init, max), fF2UI(min, init, max, amin, amid, amax)
+        {}
+        
+        LinearValueConverter2() : fUI2F(0.,0.,0.,0.,0.,0.), fF2UI(0.,0.,0.,0.,0.,0.)
+        {}
+    
+        virtual double ui2faust(double x) { return fUI2F(x); }
+        virtual double faust2ui(double x) { return fF2UI(x); }
+    
+        virtual void setMappingValues(double amin, double amid, double amax, double min, double init, double max)
+        {
+            fUI2F = Interpolator3pt(amin, amid, amax, min, init, max);
+            fF2UI = Interpolator3pt(min, init, max, amin, amid, amax);
+        }
+
+        virtual void getMappingValues(double& amin, double& amid, double& amax)
+        {
+            fUI2F.getMappingValues(amin, amid, amax);
+        }
+    
+};
+
+//--------------------------------------------------------------------------------------
+// Logarithmic conversion between ui and Faust values
+//--------------------------------------------------------------------------------------
+class LogValueConverter : public LinearValueConverter
+{
+
+    public:
+
+        LogValueConverter(double umin, double umax, double fmin, double fmax) :
+            LinearValueConverter(umin, umax, std::log(std::max<double>(DBL_MIN, fmin)), std::log(std::max<double>(DBL_MIN, fmax)))
+        {}
+
+        virtual double ui2faust(double x) { return std::exp(LinearValueConverter::ui2faust(x)); }
+        virtual double faust2ui(double x) { return LinearValueConverter::faust2ui(std::log(std::max<double>(x, DBL_MIN))); }
+
+};
+
+//--------------------------------------------------------------------------------------
+// Exponential conversion between ui and Faust values
+//--------------------------------------------------------------------------------------
+class ExpValueConverter : public LinearValueConverter
+{
+
+    public:
+
+        ExpValueConverter(double umin, double umax, double fmin, double fmax) :
+            LinearValueConverter(umin, umax, std::min<double>(DBL_MAX, std::exp(fmin)), std::min<double>(DBL_MAX, std::exp(fmax)))
+        {}
+
+        virtual double ui2faust(double x) { return std::log(LinearValueConverter::ui2faust(x)); }
+        virtual double faust2ui(double x) { return LinearValueConverter::faust2ui(std::min<double>(DBL_MAX, std::exp(x))); }
+
+};
+
+//--------------------------------------------------------------------------------------
+// Convert accelerometer or gyroscope values to Faust values
+// Using an Up curve (curve 0)
+//--------------------------------------------------------------------------------------
+class AccUpConverter : public UpdatableValueConverter
+{
+
+    private:
+
+        Interpolator3pt fA2F;
+        Interpolator3pt fF2A;
+
+    public:
+
+        AccUpConverter(double amin, double amid, double amax, double fmin, double fmid, double fmax) :
+            fA2F(amin,amid,amax,fmin,fmid,fmax),
+            fF2A(fmin,fmid,fmax,amin,amid,amax)
+        {}
+
+        virtual double ui2faust(double x) { return fA2F(x); }
+        virtual double faust2ui(double x) { return fF2A(x); }
+
+        virtual void setMappingValues(double amin, double amid, double amax, double fmin, double fmid, double fmax)
+        {
+            //__android_log_print(ANDROID_LOG_ERROR, "Faust", "AccUpConverter update %f %f %f %f %f %f", amin,amid,amax,fmin,fmid,fmax);
+            fA2F = Interpolator3pt(amin, amid, amax, fmin, fmid, fmax);
+            fF2A = Interpolator3pt(fmin, fmid, fmax, amin, amid, amax);
+        }
+
+        virtual void getMappingValues(double& amin, double& amid, double& amax)
+        {
+            fA2F.getMappingValues(amin, amid, amax);
+        }
+
+};
+
+//--------------------------------------------------------------------------------------
+// Convert accelerometer or gyroscope values to Faust values
+// Using a Down curve (curve 1)
+//--------------------------------------------------------------------------------------
+class AccDownConverter : public UpdatableValueConverter
+{
+
+    private:
+
+        Interpolator3pt	fA2F;
+        Interpolator3pt	fF2A;
+
+    public:
+
+        AccDownConverter(double amin, double amid, double amax, double fmin, double fmid, double fmax) :
+            fA2F(amin,amid,amax,fmax,fmid,fmin),
+            fF2A(fmin,fmid,fmax,amax,amid,amin)
+        {}
+
+        virtual double ui2faust(double x) { return fA2F(x); }
+        virtual double faust2ui(double x) { return fF2A(x); }
+
+        virtual void setMappingValues(double amin, double amid, double amax, double fmin, double fmid, double fmax)
+        {
+             //__android_log_print(ANDROID_LOG_ERROR, "Faust", "AccDownConverter update %f %f %f %f %f %f", amin,amid,amax,fmin,fmid,fmax);
+            fA2F = Interpolator3pt(amin, amid, amax, fmax, fmid, fmin);
+            fF2A = Interpolator3pt(fmin, fmid, fmax, amax, amid, amin);
+        }
+
+        virtual void getMappingValues(double& amin, double& amid, double& amax)
+        {
+            fA2F.getMappingValues(amin, amid, amax);
+        }
+};
+
+//--------------------------------------------------------------------------------------
+// Convert accelerometer or gyroscope values to Faust values
+// Using an Up-Down curve (curve 2)
+//--------------------------------------------------------------------------------------
+class AccUpDownConverter : public UpdatableValueConverter
+{
+
+    private:
+
+        Interpolator3pt	fA2F;
+        Interpolator fF2A;
+
+    public:
+
+        AccUpDownConverter(double amin, double amid, double amax, double fmin, double fmid, double fmax) :
+            fA2F(amin,amid,amax,fmin,fmax,fmin),
+            fF2A(fmin,fmax,amin,amax)				// Special, pseudo inverse of a non monotonic function
+        {}
+
+        virtual double ui2faust(double x) { return fA2F(x); }
+        virtual double faust2ui(double x) { return fF2A(x); }
+
+        virtual void setMappingValues(double amin, double amid, double amax, double fmin, double fmid, double fmax)
+        {
+            //__android_log_print(ANDROID_LOG_ERROR, "Faust", "AccUpDownConverter update %f %f %f %f %f %f", amin,amid,amax,fmin,fmid,fmax);
+            fA2F = Interpolator3pt(amin, amid, amax, fmin, fmax, fmin);
+            fF2A = Interpolator(fmin, fmax, amin, amax);
+        }
+
+        virtual void getMappingValues(double& amin, double& amid, double& amax)
+        {
+            fA2F.getMappingValues(amin, amid, amax);
+        }
+};
+
+//--------------------------------------------------------------------------------------
+// Convert accelerometer or gyroscope values to Faust values
+// Using a Down-Up curve (curve 3)
+//--------------------------------------------------------------------------------------
+class AccDownUpConverter : public UpdatableValueConverter
+{
+
+    private:
+
+        Interpolator3pt	fA2F;
+        Interpolator fF2A;
+
+    public:
+
+        AccDownUpConverter(double amin, double amid, double amax, double fmin, double fmid, double fmax) :
+            fA2F(amin,amid,amax,fmax,fmin,fmax),
+            fF2A(fmin,fmax,amin,amax)				// Special, pseudo inverse of a non monotonic function
+        {}
+
+        virtual double ui2faust(double x) { return fA2F(x); }
+        virtual double faust2ui(double x) { return fF2A(x); }
+
+        virtual void setMappingValues(double amin, double amid, double amax, double fmin, double fmid, double fmax)
+        {
+            //__android_log_print(ANDROID_LOG_ERROR, "Faust", "AccDownUpConverter update %f %f %f %f %f %f", amin,amid,amax,fmin,fmid,fmax);
+            fA2F = Interpolator3pt(amin, amid, amax, fmax, fmin, fmax);
+            fF2A = Interpolator(fmin, fmax, amin, amax);
+        }
+
+        virtual void getMappingValues(double& amin, double& amid, double& amax)
+        {
+            fA2F.getMappingValues(amin, amid, amax);
+        }
+};
+
+//--------------------------------------------------------------------------------------
+// Base class for ZoneControl
+//--------------------------------------------------------------------------------------
+class ZoneControl
 {
 
     protected:
-    
-        std::stringstream fUI;
-        std::stringstream fMeta;
-        std::vector<std::pair <std::string, std::string> > fMetaAux;
-        std::string fVersion;           // Compiler version
-        std::string fCompileOptions;    // Compilation options
-        std::vector<std::string> fLibraryList;
-        std::vector<std::string> fIncludePathnames;
-        std::string fName;
-        std::string fFileName;
-        std::string fExpandedCode;
-        std::string fSHAKey;
-        int fDSPSize;                   // In bytes
-        std::map<std::string, int> fPathTable;
-        bool fExtended;
-    
-        char fCloseUIPar;
-        char fCloseMetaPar;
-        int fTab;
-    
-        int fInputs, fOutputs, fSRIndex;
-         
-        void tab(int n, std::ostream& fout)
-        {
-            fout << '\n';
-            while (n-- > 0) {
-                fout << '\t';
-            }
-        }
-    
-        std::string flatten(const std::string& src)
-        {
-            std::string dst;
-            for (size_t i = 0; i < src.size(); i++) {
-                switch (src[i]) {
-                    case '\n':
-                    case '\t':
-                        break;
-                    default:
-                        dst += src[i];
-                        break;
-                }
-            }
-            return dst;
-        }
-    
-        void addMeta(int tab_val, bool quote = true)
-        {
-            if (fMetaAux.size() > 0) {
-                tab(tab_val, fUI); fUI << "\"meta\": [";
-                std::string sep = "";
-                for (size_t i = 0; i < fMetaAux.size(); i++) {
-                    fUI << sep;
-                    tab(tab_val + 1, fUI); fUI << "{ \"" << fMetaAux[i].first << "\": \"" << fMetaAux[i].second << "\" }";
-                    sep = ",";
-                }
-                tab(tab_val, fUI); fUI << ((quote) ? "],": "]");
-                fMetaAux.clear();
-            }
-        }
-    
-        int getAddressIndex(const std::string& path)
-        {
-            return (fPathTable.find(path) != fPathTable.end()) ? fPathTable[path] : -1;
-        }
-      
-     public:
-     
-        JSONUIReal(const std::string& name,
-                  const std::string& filename,
-                  int inputs,
-                  int outputs,
-                  int sr_index,
-                  const std::string& sha_key,
-                  const std::string& dsp_code,
-                  const std::string& version,
-                  const std::string& compile_options,
-                  const std::vector<std::string>& library_list,
-                  const std::vector<std::string>& include_pathnames,
-                  int size,
-                  const std::map<std::string, int>& path_table)
-        {
-            init(name, filename, inputs, outputs, sr_index, sha_key, dsp_code, version, compile_options, library_list, include_pathnames, size, path_table);
-        }
 
-        JSONUIReal(const std::string& name, const std::string& filename, int inputs, int outputs)
-        {
-            init(name, filename, inputs, outputs, -1, "", "", "", "", std::vector<std::string>(), std::vector<std::string>(), -1, std::map<std::string, int>());
-        }
+        FAUSTFLOAT*	fZone;
 
-        JSONUIReal(int inputs, int outputs)
-        {
-            init("", "", inputs, outputs, -1, "", "","", "", std::vector<std::string>(), std::vector<std::string>(), -1, std::map<std::string, int>());
-        }
-        
-        JSONUIReal()
-        {
-            init("", "", -1, -1, -1, "", "", "", "", std::vector<std::string>(), std::vector<std::string>(), -1, std::map<std::string, int>());
-        }
- 
-        virtual ~JSONUIReal() {}
-        
-        void setInputs(int inputs) { fInputs = inputs; }
-        void setOutputs(int outputs) { fOutputs = outputs; }
-    
-        void setSRIndex(int sr_index) { fSRIndex = sr_index; }
-    
-        // Init may be called multiple times so fMeta and fUI are reinitialized
-        void init(const std::string& name,
-                  const std::string& filename,
-                  int inputs,
-                  int outputs,
-                  int sr_index,
-                  const std::string& sha_key,
-                  const std::string& dsp_code,
-                  const std::string& version,
-                  const std::string& compile_options,
-                  const std::vector<std::string>& library_list,
-                  const std::vector<std::string>& include_pathnames,
-                  int size,
-                  const std::map<std::string, int>& path_table,
-                  bool extended = false)
-        {
-            fTab = 1;
-            fExtended = extended;
-            if (fExtended) {
-                fUI << std::setprecision(std::numeric_limits<REAL>::max_digits10);
-                fMeta << std::setprecision(std::numeric_limits<REAL>::max_digits10);
-            }
-            
-            // Start Meta generation
-            fMeta.str("");
-            tab(fTab, fMeta); fMeta << "\"meta\": [";
-            fCloseMetaPar = ' ';
-            
-            // Start UI generation
-            fUI.str("");
-            tab(fTab, fUI); fUI << "\"ui\": [";
-            fCloseUIPar = ' ';
-            fTab += 1;
-            
-            fName = name;
-            fFileName = filename;
-            fInputs = inputs;
-            fOutputs = outputs;
-            fSRIndex = sr_index;
-            fExpandedCode = dsp_code;
-            fSHAKey = sha_key;
-            fDSPSize = size;
-            fPathTable = path_table;
-            fVersion = version;
-            fCompileOptions = compile_options;
-            fLibraryList = library_list;
-            fIncludePathnames = include_pathnames;
-        }
-   
-        // -- widget's layouts
-    
-        virtual void openGenericGroup(const char* label, const char* name)
-        {
-            pushLabel(label);
-            fUI << fCloseUIPar;
-            tab(fTab, fUI); fUI << "{";
-            fTab += 1;
-            tab(fTab, fUI); fUI << "\"type\": \"" << name << "\",";
-            tab(fTab, fUI); fUI << "\"label\": \"" << label << "\",";
-            addMeta(fTab);
-            tab(fTab, fUI); fUI << "\"items\": [";
-            fCloseUIPar = ' ';
-            fTab += 1;
-        }
+    public:
 
-        virtual void openTabBox(const char* label)
-        {
-            openGenericGroup(label, "tgroup");
-        }
-    
-        virtual void openHorizontalBox(const char* label)
-        {
-            openGenericGroup(label, "hgroup");
-        }
-    
-        virtual void openVerticalBox(const char* label)
-        {
-            openGenericGroup(label, "vgroup");
-        }
-    
-        virtual void closeBox()
-        {
-            popLabel();
-            fTab -= 1;
-            tab(fTab, fUI); fUI << "]";
-            fTab -= 1;
-            tab(fTab, fUI); fUI << "}";
-            fCloseUIPar = ',';
-        }
-    
-        // -- active widgets
-  
-        virtual void addGenericButton(const char* label, const char* name)
-        {
-            std::string path = buildPath(label);
-            
-            fUI << fCloseUIPar;
-            tab(fTab, fUI); fUI << "{";
-            fTab += 1;
-            tab(fTab, fUI); fUI << "\"type\": \"" << name << "\",";
-            tab(fTab, fUI); fUI << "\"label\": \"" << label << "\",";
-            if (fPathTable.size() > 0) {
-                tab(fTab, fUI); fUI << "\"address\": \"" << path << "\",";
-                tab(fTab, fUI); fUI << "\"index\": " << getAddressIndex(path) << ((fMetaAux.size() > 0) ? "," : "");
-            } else {
-                tab(fTab, fUI); fUI << "\"address\": \"" << path << "\"" << ((fMetaAux.size() > 0) ? "," : "");
-            }
-            addMeta(fTab, false);
-            fTab -= 1;
-            tab(fTab, fUI); fUI << "}";
-            fCloseUIPar = ',';
-        }
+        ZoneControl(FAUSTFLOAT* zone) : fZone(zone) {}
+        virtual ~ZoneControl() {}
 
-        virtual void addButton(const char* label, REAL* zone)
-        {
-            addGenericButton(label, "button");
-        }
-    
-        virtual void addCheckButton(const char* label, REAL* zone)
-        {
-            addGenericButton(label, "checkbox");
-        }
+        virtual void update(double v) {}
 
-        virtual void addGenericEntry(const char* label, const char* name, REAL init, REAL min, REAL max, REAL step)
-        {
-            std::string path = buildPath(label);
-            
-            fUI << fCloseUIPar;
-            tab(fTab, fUI); fUI << "{";
-            fTab += 1;
-            tab(fTab, fUI); fUI << "\"type\": \"" << name << "\",";
-            tab(fTab, fUI); fUI << "\"label\": \"" << label << "\",";
-            tab(fTab, fUI); fUI << "\"address\": \"" << path << "\",";
-            if (fPathTable.size() > 0) {
-                tab(fTab, fUI); fUI << "\"index\": " << getAddressIndex(path) << ",";
-            }
-            addMeta(fTab);
-            tab(fTab, fUI); fUI << "\"init\": " << init << ",";
-            tab(fTab, fUI); fUI << "\"min\": " << min << ",";
-            tab(fTab, fUI); fUI << "\"max\": " << max << ",";
-            tab(fTab, fUI); fUI << "\"step\": " << step;
-            fTab -= 1;
-            tab(fTab, fUI); fUI << "}";
-            fCloseUIPar = ',';
-        }
-    
-        virtual void addVerticalSlider(const char* label, REAL* zone, REAL init, REAL min, REAL max, REAL step)
-        {
-            addGenericEntry(label, "vslider", init, min, max, step);
-        }
-    
-        virtual void addHorizontalSlider(const char* label, REAL* zone, REAL init, REAL min, REAL max, REAL step)
-        {
-            addGenericEntry(label, "hslider", init, min, max, step);
-        }
-    
-        virtual void addNumEntry(const char* label, REAL* zone, REAL init, REAL min, REAL max, REAL step)
-        {
-            addGenericEntry(label, "nentry", init, min, max, step);
-        }
+        virtual void setMappingValues(int curve, double amin, double amid, double amax, double min, double init, double max) {}
+        virtual void getMappingValues(double& amin, double& amid, double& amax) {}
 
-        // -- passive widgets
-    
-        virtual void addGenericBargraph(const char* label, const char* name, REAL min, REAL max) 
-        {
-            std::string path = buildPath(label);
-            
-            fUI << fCloseUIPar;
-            tab(fTab, fUI); fUI << "{";
-            fTab += 1;
-            tab(fTab, fUI); fUI << "\"type\": \"" << name << "\",";
-            tab(fTab, fUI); fUI << "\"label\": \"" << label << "\",";
-            tab(fTab, fUI); fUI << "\"address\": \"" << path << "\",";
-            if (fPathTable.size() > 0) {
-                tab(fTab, fUI); fUI << "\"index\": " << getAddressIndex(path) << ",";
-            }
-            addMeta(fTab);
-            tab(fTab, fUI); fUI << "\"min\": " << min << ",";
-            tab(fTab, fUI); fUI << "\"max\": " << max;
-            fTab -= 1;
-            tab(fTab, fUI); fUI << "}";
-            fCloseUIPar = ',';
-        }
+        FAUSTFLOAT* getZone() { return fZone; }
 
-        virtual void addHorizontalBargraph(const char* label, REAL* zone, REAL min, REAL max) 
-        {
-            addGenericBargraph(label, "hbargraph", min, max);
-        }
-    
-        virtual void addVerticalBargraph(const char* label, REAL* zone, REAL min, REAL max)
-        {
-            addGenericBargraph(label, "vbargraph", min, max);
-        }
-    
-        virtual void addSoundfile(const char* label, const char* url, Soundfile** zone)
-        {
-            std::string path = buildPath(label);
-            
-            fUI << fCloseUIPar;
-            tab(fTab, fUI); fUI << "{";
-            fTab += 1;
-            tab(fTab, fUI); fUI << "\"type\": \"" << "soundfile" << "\",";
-            tab(fTab, fUI); fUI << "\"label\": \"" << label << "\"" << ",";
-            tab(fTab, fUI); fUI << "\"url\": \"" << url << "\"" << ",";
-            tab(fTab, fUI); fUI << "\"address\": \"" << path << "\"" << ((fPathTable.size() > 0) ? "," : "");
-            if (fPathTable.size() > 0) {
-                tab(fTab, fUI); fUI << "\"index\": " << getAddressIndex(path);
-            }
-            fTab -= 1;
-            tab(fTab, fUI); fUI << "}";
-            fCloseUIPar = ',';
-        }
+        virtual void setActive(bool on_off) {}
+        virtual bool getActive() { return false; }
 
-        // -- metadata declarations
+        virtual int getCurve() { return -1; }
 
-        virtual void declare(REAL* zone, const char* key, const char* val)
-        {
-            fMetaAux.push_back(std::make_pair(key, val));
-        }
-    
-        // Meta interface
-        virtual void declare(const char* key, const char* value)
-        {
-            fMeta << fCloseMetaPar;
-            // fName found in metadata
-            if ((strcmp(key, "name") == 0) && (fName == "")) fName = value;
-            // fFileName found in metadata
-            if ((strcmp(key, "filename") == 0) && (fFileName == "")) fFileName = value;
-            tab(fTab, fMeta); fMeta << "{ " << "\"" << key << "\"" << ": " << "\"" << value << "\" }";
-            fCloseMetaPar = ',';
-        }
-    
-        std::string JSON(bool flat = false)
-        {
-            fTab = 0;
-            std::stringstream JSON;
-            if (fExtended) {
-                JSON << std::setprecision(std::numeric_limits<REAL>::max_digits10);
-            }
-            JSON << "{";
-            fTab += 1;
-            tab(fTab, JSON); JSON << "\"name\": \"" << fName << "\",";
-            tab(fTab, JSON); JSON << "\"filename\": \"" << fFileName << "\",";
-            if (fVersion != "") { tab(fTab, JSON); JSON << "\"version\": \"" << fVersion << "\","; }
-            if (fCompileOptions != "") { tab(fTab, JSON); JSON << "\"compile_options\": \"" <<  fCompileOptions << "\","; }
-            if (fLibraryList.size() > 0) {
-                tab(fTab, JSON);
-                JSON << "\"library_list\": [";
-                for (size_t i = 0; i < fLibraryList.size(); i++) {
-                    JSON << "\"" << fLibraryList[i] << "\"";
-                    if (i < (fLibraryList.size() - 1)) JSON << ",";
-                }
-                JSON << "],";
-            }
-            if (fIncludePathnames.size() > 0) {
-                tab(fTab, JSON);
-                JSON << "\"include_pathnames\": [";
-                for (size_t i = 0; i < fIncludePathnames.size(); i++) {
-                    JSON << "\"" << fIncludePathnames[i] << "\"";
-                    if (i < (fIncludePathnames.size() - 1)) JSON << ",";
-                }
-                JSON << "],";
-            }
-            if (fDSPSize != -1) { tab(fTab, JSON); JSON << "\"size\": " << fDSPSize << ","; }
-            if (fSHAKey != "") { tab(fTab, JSON); JSON << "\"sha_key\": \"" << fSHAKey << "\","; }
-            if (fExpandedCode != "") { tab(fTab, JSON); JSON << "\"code\": \"" << fExpandedCode << "\","; }
-            tab(fTab, JSON); JSON << "\"inputs\": " << fInputs << ",";
-            tab(fTab, JSON); JSON << "\"outputs\": " << fOutputs << ",";
-            if (fSRIndex != -1) { tab(fTab, JSON); JSON << "\"sr_index\": " << fSRIndex << ","; }
-            tab(fTab, fMeta); fMeta << "],";
-            tab(fTab, fUI); fUI << "]";
-            fTab -= 1;
-            if (fCloseMetaPar == ',') { // If "declare" has been called, fCloseMetaPar state is now ','
-                JSON << fMeta.str() << fUI.str();
-            } else {
-                JSON << fUI.str();
-            }
-            tab(fTab, JSON); JSON << "}";
-            return (flat) ? flatten(JSON.str()) : JSON.str();
-        }
-    
 };
 
-// Externally available class using FAUSTFLOAT
-
-struct JSONUI : public JSONUIReal<FAUSTFLOAT>, public UI
+//--------------------------------------------------------------------------------------
+//  Useful to implement accelerometers metadata as a list of ZoneControl for each axes
+//--------------------------------------------------------------------------------------
+class ConverterZoneControl : public ZoneControl
 {
-    
-    JSONUI(const std::string& name,
-           const std::string& filename,
-           int inputs,
-           int outputs,
-           int sr_index,
-           const std::string& sha_key,
-           const std::string& dsp_code,
-           const std::string& version,
-           const std::string& compile_options,
-           const std::vector<std::string>& library_list,
-           const std::vector<std::string>& include_pathnames,
-           int size,
-           const std::map<std::string, int>& path_table):
-    JSONUIReal<FAUSTFLOAT>(name, filename,
-                          inputs, outputs,
-                          sr_index,
-                          sha_key, dsp_code,
-                          version, compile_options,
-                          library_list, include_pathnames,
-                          size, path_table)
-    {}
-    
-    JSONUI(const std::string& name, const std::string& filename, int inputs, int outputs):
-    JSONUIReal<FAUSTFLOAT>(name, filename, inputs, outputs)
-    {}
-    
-    JSONUI(int inputs, int outputs):JSONUIReal<FAUSTFLOAT>(inputs, outputs)
-    {}
-    
-    JSONUI():JSONUIReal<FAUSTFLOAT>()
-    {}
 
-    virtual void openTabBox(const char* label)
-    {
-        JSONUIReal<FAUSTFLOAT>::openTabBox(label);
-    }
-    virtual void openHorizontalBox(const char* label)
-    {
-        JSONUIReal<FAUSTFLOAT>::openHorizontalBox(label);
-    }
-    virtual void openVerticalBox(const char* label)
-    {
-        JSONUIReal<FAUSTFLOAT>::openVerticalBox(label);
-    }
-    virtual void closeBox()
-    {
-        JSONUIReal<FAUSTFLOAT>::closeBox();
-    }
-    
-    // -- active widgets
-    
-    virtual void addButton(const char* label, FAUSTFLOAT* zone)
-    {
-        JSONUIReal<FAUSTFLOAT>::addButton(label, zone);
-    }
-    virtual void addCheckButton(const char* label, FAUSTFLOAT* zone)
-    {
-        JSONUIReal<FAUSTFLOAT>::addCheckButton(label, zone);
-    }
-    virtual void addVerticalSlider(const char* label, FAUSTFLOAT* zone, FAUSTFLOAT init, FAUSTFLOAT min, FAUSTFLOAT max, FAUSTFLOAT step)
-    {
-        JSONUIReal<FAUSTFLOAT>::addVerticalSlider(label, zone, init, min, max, step);
-    }
-    virtual void addHorizontalSlider(const char* label, FAUSTFLOAT* zone, FAUSTFLOAT init, FAUSTFLOAT min, FAUSTFLOAT max, FAUSTFLOAT step)
-    {
-        JSONUIReal<FAUSTFLOAT>::addHorizontalSlider(label, zone, init, min, max, step);
-    }
-    virtual void addNumEntry(const char* label, FAUSTFLOAT* zone, FAUSTFLOAT init, FAUSTFLOAT min, FAUSTFLOAT max, FAUSTFLOAT step)
-    {
-        JSONUIReal<FAUSTFLOAT>::addNumEntry(label, zone, init, min, max, step);
-    }
-    
-    // -- passive widgets
-    
-    virtual void addHorizontalBargraph(const char* label, FAUSTFLOAT* zone, FAUSTFLOAT min, FAUSTFLOAT max)
-    {
-        JSONUIReal<FAUSTFLOAT>::addHorizontalBargraph(label, zone, min, max);
-    }
-    virtual void addVerticalBargraph(const char* label, FAUSTFLOAT* zone, FAUSTFLOAT min, FAUSTFLOAT max)
-    {
-        JSONUIReal<FAUSTFLOAT>::addVerticalBargraph(label, zone, min, max);
-    }
-    
-    // -- soundfiles
-    
-    virtual void addSoundfile(const char* label, const char* filename, Soundfile** sf_zone)
-    {
-        JSONUIReal<FAUSTFLOAT>::addSoundfile(label, filename, sf_zone);
-    }
-    
-    // -- metadata declarations
-    
-    virtual void declare(FAUSTFLOAT* zone, const char* key, const char* val)
-    {
-        JSONUIReal<FAUSTFLOAT>::declare(zone, key, val);
-    }
+    protected:
 
-    virtual void declare(const char* key, const char* val)
-    {
-        JSONUIReal<FAUSTFLOAT>::declare(key, val);
-    }
+        ValueConverter* fValueConverter;
 
-    virtual ~JSONUI() {}
-    
+    public:
+
+        ConverterZoneControl(FAUSTFLOAT* zone, ValueConverter* converter) : ZoneControl(zone), fValueConverter(converter) {}
+        virtual ~ConverterZoneControl() { delete fValueConverter; } // Assuming fValueConverter is not kept elsewhere...
+
+        virtual void update(double v) { *fZone = fValueConverter->ui2faust(v); }
+
+        ValueConverter* getConverter() { return fValueConverter; }
+
 };
 
-#endif // FAUST_JSONUI_H
-/**************************  END  JSONUI.h **************************/
+//--------------------------------------------------------------------------------------
+// Association of a zone and a four value converter, each one for each possible curve.
+// Useful to implement accelerometers metadata as a list of ZoneControl for each axes
+//--------------------------------------------------------------------------------------
+class CurveZoneControl : public ZoneControl
+{
+
+    private:
+
+        std::vector<UpdatableValueConverter*> fValueConverters;
+        int fCurve;
+
+    public:
+
+        CurveZoneControl(FAUSTFLOAT* zone, int curve, double amin, double amid, double amax, double min, double init, double max) : ZoneControl(zone), fCurve(0)
+        {
+            assert(curve >= 0 && curve <= 3);
+            fValueConverters.push_back(new AccUpConverter(amin, amid, amax, min, init, max));
+            fValueConverters.push_back(new AccDownConverter(amin, amid, amax, min, init, max));
+            fValueConverters.push_back(new AccUpDownConverter(amin, amid, amax, min, init, max));
+            fValueConverters.push_back(new AccDownUpConverter(amin, amid, amax, min, init, max));
+            fCurve = curve;
+        }
+        virtual ~CurveZoneControl()
+        {
+            std::vector<UpdatableValueConverter*>::iterator it;
+            for (it = fValueConverters.begin(); it != fValueConverters.end(); it++) {
+                delete(*it);
+            }
+        }
+        void update(double v) { if (fValueConverters[fCurve]->getActive()) *fZone = fValueConverters[fCurve]->ui2faust(v); }
+
+        void setMappingValues(int curve, double amin, double amid, double amax, double min, double init, double max)
+        {
+            fValueConverters[curve]->setMappingValues(amin, amid, amax, min, init, max);
+            fCurve = curve;
+        }
+
+        void getMappingValues(double& amin, double& amid, double& amax)
+        {
+            fValueConverters[fCurve]->getMappingValues(amin, amid, amax);
+        }
+
+        void setActive(bool on_off)
+        {
+            std::vector<UpdatableValueConverter*>::iterator it;
+            for (it = fValueConverters.begin(); it != fValueConverters.end(); it++) {
+                (*it)->setActive(on_off);
+            }
+        }
+
+        int getCurve() { return fCurve; }
+};
+
+class ZoneReader
+{
+
+    private:
+
+        FAUSTFLOAT* fZone;
+        Interpolator fInterpolator;
+
+    public:
+
+        ZoneReader(FAUSTFLOAT* zone, double lo, double hi) : fZone(zone), fInterpolator(lo, hi, 0, 255) {}
+
+        virtual ~ZoneReader() {}
+
+        int getValue()
+        {
+            return (fZone != nullptr) ? int(fInterpolator(*fZone)) : 127;
+        }
+
+};
+
+#endif
+/**************************  END  ValueConverter.h **************************/
 /************************** BEGIN MetaDataUI.h **************************/
 /************************************************************************
  FAUST Architecture File
@@ -2430,6 +1658,7 @@ struct JSONUI : public JSONUIReal<FAUSTFLOAT>, public UI
 #include <map>
 #include <set>
 #include <string>
+#include <string.h>
 #include <assert.h>
 
 /************************** BEGIN SimpleParser.h **************************/
@@ -3281,6 +2510,1366 @@ class MetaDataUI {
 
 #endif
 /**************************  END  MetaDataUI.h **************************/
+/************************** BEGIN ring-buffer.h **************************/
+/*
+  Copyright (C) 2000 Paul Davis
+  Copyright (C) 2003 Rohan Drape
+  Copyright (C) 2016 GRAME (renaming for internal use)
+
+  This program is free software; you can redistribute it and/or modify
+  it under the terms of the GNU Lesser General Public License as published by
+  the Free Software Foundation; either version 2.1 of the License, or
+  (at your option) any later version.
+
+  This program is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  GNU Lesser General Public License for more details.
+
+  You should have received a copy of the GNU Lesser General Public License
+  along with this program; if not, write to the Free Software
+  Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+
+  ISO/POSIX C version of Paul Davis's lock free ringbuffer C++ code.
+  This is safe for the case of one read thread and one write thread.
+*/
+
+#ifndef __ring_buffer__
+#define __ring_buffer__
+
+#include <stdlib.h>
+#include <string.h>
+
+#ifdef WIN32
+# pragma warning (disable: 4334)
+#else
+# pragma GCC diagnostic ignored "-Wunused-function"
+#endif
+
+typedef struct {
+    char *buf;
+    size_t len;
+}
+ringbuffer_data_t;
+
+typedef struct {
+    char *buf;
+    volatile size_t write_ptr;
+    volatile size_t read_ptr;
+    size_t	size;
+    size_t	size_mask;
+    int	mlocked;
+}
+ringbuffer_t;
+
+static ringbuffer_t *ringbuffer_create(size_t sz);
+static void ringbuffer_free(ringbuffer_t *rb);
+static void ringbuffer_get_read_vector(const ringbuffer_t *rb,
+                                         ringbuffer_data_t *vec);
+static void ringbuffer_get_write_vector(const ringbuffer_t *rb,
+                                          ringbuffer_data_t *vec);
+static size_t ringbuffer_read(ringbuffer_t *rb, char *dest, size_t cnt);
+static size_t ringbuffer_peek(ringbuffer_t *rb, char *dest, size_t cnt);
+static void ringbuffer_read_advance(ringbuffer_t *rb, size_t cnt);
+static size_t ringbuffer_read_space(const ringbuffer_t *rb);
+static int ringbuffer_mlock(ringbuffer_t *rb);
+static void ringbuffer_reset(ringbuffer_t *rb);
+static void ringbuffer_reset_size (ringbuffer_t * rb, size_t sz);
+static size_t ringbuffer_write(ringbuffer_t *rb, const char *src,
+                                 size_t cnt);
+static void ringbuffer_write_advance(ringbuffer_t *rb, size_t cnt);
+static size_t ringbuffer_write_space(const ringbuffer_t *rb);
+
+/* Create a new ringbuffer to hold at least `sz' bytes of data. The
+   actual buffer size is rounded up to the next power of two. */
+
+static ringbuffer_t *
+ringbuffer_create (size_t sz)
+{
+	size_t power_of_two;
+	ringbuffer_t *rb;
+
+	if ((rb = (ringbuffer_t *) malloc (sizeof (ringbuffer_t))) == NULL) {
+		return NULL;
+	}
+
+	for (power_of_two = 1u; 1u << power_of_two < sz; power_of_two++);
+
+	rb->size = 1u << power_of_two;
+	rb->size_mask = rb->size;
+	rb->size_mask -= 1;
+	rb->write_ptr = 0;
+	rb->read_ptr = 0;
+	if ((rb->buf = (char *) malloc (rb->size)) == NULL) {
+		free (rb);
+		return NULL;
+	}
+	rb->mlocked = 0;
+
+	return rb;
+}
+
+/* Free all data associated with the ringbuffer `rb'. */
+
+static void
+ringbuffer_free (ringbuffer_t * rb)
+{
+#ifdef USE_MLOCK
+	if (rb->mlocked) {
+		munlock (rb->buf, rb->size);
+	}
+#endif /* USE_MLOCK */
+	free (rb->buf);
+	free (rb);
+}
+
+/* Lock the data block of `rb' using the system call 'mlock'.  */
+
+static int
+ringbuffer_mlock (ringbuffer_t * rb)
+{
+#ifdef USE_MLOCK
+	if (mlock (rb->buf, rb->size)) {
+		return -1;
+	}
+#endif /* USE_MLOCK */
+	rb->mlocked = 1;
+	return 0;
+}
+
+/* Reset the read and write pointers to zero. This is not thread
+   safe. */
+
+static void
+ringbuffer_reset (ringbuffer_t * rb)
+{
+	rb->read_ptr = 0;
+	rb->write_ptr = 0;
+    memset(rb->buf, 0, rb->size);
+}
+
+/* Reset the read and write pointers to zero. This is not thread
+   safe. */
+
+static void
+ringbuffer_reset_size (ringbuffer_t * rb, size_t sz)
+{
+    rb->size = sz;
+    rb->size_mask = rb->size;
+    rb->size_mask -= 1;
+    rb->read_ptr = 0;
+    rb->write_ptr = 0;
+}
+
+/* Return the number of bytes available for reading. This is the
+   number of bytes in front of the read pointer and behind the write
+   pointer.  */
+
+static size_t
+ringbuffer_read_space (const ringbuffer_t * rb)
+{
+	size_t w, r;
+
+	w = rb->write_ptr;
+	r = rb->read_ptr;
+
+	if (w > r) {
+		return w - r;
+	} else {
+		return (w - r + rb->size) & rb->size_mask;
+	}
+}
+
+/* Return the number of bytes available for writing. This is the
+   number of bytes in front of the write pointer and behind the read
+   pointer.  */
+
+static size_t
+ringbuffer_write_space (const ringbuffer_t * rb)
+{
+	size_t w, r;
+
+	w = rb->write_ptr;
+	r = rb->read_ptr;
+
+	if (w > r) {
+		return ((r - w + rb->size) & rb->size_mask) - 1;
+	} else if (w < r) {
+		return (r - w) - 1;
+	} else {
+		return rb->size - 1;
+	}
+}
+
+/* The copying data reader. Copy at most `cnt' bytes from `rb' to
+   `dest'.  Returns the actual number of bytes copied. */
+
+static size_t
+ringbuffer_read (ringbuffer_t * rb, char *dest, size_t cnt)
+{
+	size_t free_cnt;
+	size_t cnt2;
+	size_t to_read;
+	size_t n1, n2;
+
+	if ((free_cnt = ringbuffer_read_space (rb)) == 0) {
+		return 0;
+	}
+
+	to_read = cnt > free_cnt ? free_cnt : cnt;
+
+	cnt2 = rb->read_ptr + to_read;
+
+	if (cnt2 > rb->size) {
+		n1 = rb->size - rb->read_ptr;
+		n2 = cnt2 & rb->size_mask;
+	} else {
+		n1 = to_read;
+		n2 = 0;
+	}
+
+	memcpy (dest, &(rb->buf[rb->read_ptr]), n1);
+	rb->read_ptr = (rb->read_ptr + n1) & rb->size_mask;
+
+	if (n2) {
+		memcpy (dest + n1, &(rb->buf[rb->read_ptr]), n2);
+		rb->read_ptr = (rb->read_ptr + n2) & rb->size_mask;
+	}
+
+	return to_read;
+}
+
+/* The copying data reader w/o read pointer advance. Copy at most
+   `cnt' bytes from `rb' to `dest'.  Returns the actual number of bytes
+   copied. */
+
+static size_t
+ringbuffer_peek (ringbuffer_t * rb, char *dest, size_t cnt)
+{
+	size_t free_cnt;
+	size_t cnt2;
+	size_t to_read;
+	size_t n1, n2;
+	size_t tmp_read_ptr;
+
+	tmp_read_ptr = rb->read_ptr;
+
+	if ((free_cnt = ringbuffer_read_space (rb)) == 0) {
+		return 0;
+	}
+
+	to_read = cnt > free_cnt ? free_cnt : cnt;
+
+	cnt2 = tmp_read_ptr + to_read;
+
+	if (cnt2 > rb->size) {
+		n1 = rb->size - tmp_read_ptr;
+		n2 = cnt2 & rb->size_mask;
+	} else {
+		n1 = to_read;
+		n2 = 0;
+	}
+
+	memcpy (dest, &(rb->buf[tmp_read_ptr]), n1);
+	tmp_read_ptr = (tmp_read_ptr + n1) & rb->size_mask;
+
+	if (n2) {
+		memcpy (dest + n1, &(rb->buf[tmp_read_ptr]), n2);
+	}
+
+	return to_read;
+}
+
+/* The copying data writer. Copy at most `cnt' bytes to `rb' from
+   `src'.  Returns the actual number of bytes copied. */
+
+static size_t
+ringbuffer_write (ringbuffer_t * rb, const char *src, size_t cnt)
+{
+	size_t free_cnt;
+	size_t cnt2;
+	size_t to_write;
+	size_t n1, n2;
+
+	if ((free_cnt = ringbuffer_write_space (rb)) == 0) {
+		return 0;
+	}
+
+	to_write = cnt > free_cnt ? free_cnt : cnt;
+
+	cnt2 = rb->write_ptr + to_write;
+
+	if (cnt2 > rb->size) {
+		n1 = rb->size - rb->write_ptr;
+		n2 = cnt2 & rb->size_mask;
+	} else {
+		n1 = to_write;
+		n2 = 0;
+	}
+
+	memcpy (&(rb->buf[rb->write_ptr]), src, n1);
+	rb->write_ptr = (rb->write_ptr + n1) & rb->size_mask;
+
+	if (n2) {
+		memcpy (&(rb->buf[rb->write_ptr]), src + n1, n2);
+		rb->write_ptr = (rb->write_ptr + n2) & rb->size_mask;
+	}
+
+	return to_write;
+}
+
+/* Advance the read pointer `cnt' places. */
+
+static void
+ringbuffer_read_advance (ringbuffer_t * rb, size_t cnt)
+{
+	size_t tmp = (rb->read_ptr + cnt) & rb->size_mask;
+	rb->read_ptr = tmp;
+}
+
+/* Advance the write pointer `cnt' places. */
+
+static void
+ringbuffer_write_advance (ringbuffer_t * rb, size_t cnt)
+{
+	size_t tmp = (rb->write_ptr + cnt) & rb->size_mask;
+	rb->write_ptr = tmp;
+}
+
+/* The non-copying data reader. `vec' is an array of two places. Set
+   the values at `vec' to hold the current readable data at `rb'. If
+   the readable data is in one segment the second segment has zero
+   length. */
+
+static void
+ringbuffer_get_read_vector (const ringbuffer_t * rb,
+				 ringbuffer_data_t * vec)
+{
+	size_t free_cnt;
+	size_t cnt2;
+	size_t w, r;
+
+	w = rb->write_ptr;
+	r = rb->read_ptr;
+
+	if (w > r) {
+		free_cnt = w - r;
+	} else {
+		free_cnt = (w - r + rb->size) & rb->size_mask;
+	}
+
+	cnt2 = r + free_cnt;
+
+	if (cnt2 > rb->size) {
+
+		/* Two part vector: the rest of the buffer after the current write
+		   ptr, plus some from the start of the buffer. */
+
+		vec[0].buf = &(rb->buf[r]);
+		vec[0].len = rb->size - r;
+		vec[1].buf = rb->buf;
+		vec[1].len = cnt2 & rb->size_mask;
+
+	} else {
+
+		/* Single part vector: just the rest of the buffer */
+
+		vec[0].buf = &(rb->buf[r]);
+		vec[0].len = free_cnt;
+		vec[1].len = 0;
+	}
+}
+
+/* The non-copying data writer. `vec' is an array of two places. Set
+   the values at `vec' to hold the current writeable data at `rb'. If
+   the writeable data is in one segment the second segment has zero
+   length. */
+
+static void
+ringbuffer_get_write_vector (const ringbuffer_t * rb,
+				  ringbuffer_data_t * vec)
+{
+	size_t free_cnt;
+	size_t cnt2;
+	size_t w, r;
+
+	w = rb->write_ptr;
+	r = rb->read_ptr;
+
+	if (w > r) {
+		free_cnt = ((r - w + rb->size) & rb->size_mask) - 1;
+	} else if (w < r) {
+		free_cnt = (r - w) - 1;
+	} else {
+		free_cnt = rb->size - 1;
+	}
+
+	cnt2 = w + free_cnt;
+
+	if (cnt2 > rb->size) {
+
+		/* Two part vector: the rest of the buffer after the current write
+		   ptr, plus some from the start of the buffer. */
+
+		vec[0].buf = &(rb->buf[w]);
+		vec[0].len = rb->size - w;
+		vec[1].buf = rb->buf;
+		vec[1].len = cnt2 & rb->size_mask;
+	} else {
+		vec[0].buf = &(rb->buf[w]);
+		vec[0].len = free_cnt;
+		vec[1].len = 0;
+	}
+}
+
+#endif // __ring_buffer__
+/**************************  END  ring-buffer.h **************************/
+
+/*******************************************************************************
+ * GUI : Abstract Graphic User Interface
+ * Provides additional mechanisms to synchronize widgets and zones. Widgets
+ * should both reflect the value of a zone and allow to change this value.
+ ******************************************************************************/
+
+class uiItem;
+class GUI;
+struct clist;
+
+typedef void (*uiCallback)(FAUSTFLOAT val, void* data);
+
+struct uiItemBase
+{
+    
+    uiItemBase(GUI* ui, FAUSTFLOAT* zone)
+    {
+        assert(ui);
+        assert(zone);
+    }
+    
+    virtual ~uiItemBase()
+    {}
+    
+    virtual void modifyZone(FAUSTFLOAT v) = 0;
+    virtual void modifyZone(double date, FAUSTFLOAT v) {}
+    virtual double cache() = 0;
+    virtual void reflectZone() = 0;
+};
+
+// Declared as 'static' to avoid code duplication at link time
+static void deleteClist(clist* cl);
+
+struct clist : public std::list<uiItemBase*>
+{
+    
+    virtual ~clist()
+    {
+        deleteClist(this);
+    }
+        
+};
+
+static void createUiCallbackItem(GUI* ui, FAUSTFLOAT* zone, uiCallback foo, void* data);
+
+typedef std::map<FAUSTFLOAT*, clist*> zmap;
+
+typedef std::map<FAUSTFLOAT*, ringbuffer_t*> ztimedmap;
+
+class GUI : public UI
+{
+		
+    private:
+     
+        static std::list<GUI*> fGuiList;
+        zmap fZoneMap;
+        bool fStopped;
+        
+     public:
+            
+        GUI():fStopped(false)
+        {	
+            fGuiList.push_back(this);
+        }
+        
+        virtual ~GUI() 
+        {   
+            // delete all items
+            for (auto& it : fZoneMap) {
+                delete it.second;
+            }
+            // suppress 'this' in static fGuiList
+            fGuiList.remove(this);
+        }
+
+        // -- registerZone(z,c) : zone management
+        
+        void registerZone(FAUSTFLOAT* z, uiItemBase* c)
+        {
+            if (fZoneMap.find(z) == fZoneMap.end()) fZoneMap[z] = new clist();
+            fZoneMap[z]->push_back(c);
+        }
+ 
+        void updateZone(FAUSTFLOAT* z)
+        {
+            FAUSTFLOAT v = *z;
+            clist* cl = fZoneMap[z];
+            for (auto& c : *cl) {
+                if (c->cache() != v) c->reflectZone();
+            }
+        }
+    
+        void updateAllZones()
+        {
+            for (auto& m : fZoneMap) {
+                updateZone(m.first);
+            }
+        }
+    
+        static void updateAllGuis()
+        {
+            for (auto& g : fGuiList) {
+                g->updateAllZones();
+            }
+        }
+    
+        static void runAllGuis()
+        {
+            for (auto& g : fGuiList) {
+                g->run();
+            }
+        }
+    
+        void addCallback(FAUSTFLOAT* zone, uiCallback foo, void* data)
+        {
+            createUiCallbackItem(this, zone, foo, data);
+        }
+
+        virtual void show() {};	
+        virtual bool run() { return false; };
+
+        virtual void stop() { fStopped = true; }
+        bool stopped() { return fStopped; }
+    
+        // -- widget's layouts
+        
+        virtual void openTabBox(const char* label) {};
+        virtual void openHorizontalBox(const char* label) {}
+        virtual void openVerticalBox(const char* label) {}
+        virtual void closeBox() {}
+        
+        // -- active widgets
+        
+        virtual void addButton(const char* label, FAUSTFLOAT* zone) {}
+        virtual void addCheckButton(const char* label, FAUSTFLOAT* zone) {}
+        virtual void addVerticalSlider(const char* label, FAUSTFLOAT* zone, FAUSTFLOAT init, FAUSTFLOAT min, FAUSTFLOAT max, FAUSTFLOAT step) {}
+        virtual void addHorizontalSlider(const char* label, FAUSTFLOAT* zone, FAUSTFLOAT init, FAUSTFLOAT min, FAUSTFLOAT max, FAUSTFLOAT step) {}
+        virtual void addNumEntry(const char* label, FAUSTFLOAT* zone, FAUSTFLOAT init, FAUSTFLOAT min, FAUSTFLOAT max, FAUSTFLOAT step) {}
+    
+        // -- passive widgets
+        
+        virtual void addHorizontalBargraph(const char* label, FAUSTFLOAT* zone, FAUSTFLOAT min, FAUSTFLOAT max) {}
+        virtual void addVerticalBargraph(const char* label, FAUSTFLOAT* zone, FAUSTFLOAT min, FAUSTFLOAT max) {}
+    
+        // -- soundfiles
+    
+        virtual void addSoundfile(const char* label, const char* filename, Soundfile** sf_zone) {}
+    
+        // -- metadata declarations
+
+        virtual void declare(FAUSTFLOAT*, const char*, const char*) {}
+    
+        // Static global for timed zones, shared between all UI that will set timed values
+        static ztimedmap gTimedZoneMap;
+
+};
+
+/**
+ * User Interface Item: abstract definition
+ */
+
+template <typename REAL>
+class uiTypedItem : public uiItemBase
+{
+    protected:
+        
+        GUI* fGUI;
+        REAL* fZone;
+        REAL fCache;
+        
+        uiTypedItem(GUI* ui, REAL* zone):uiItemBase(ui, static_cast<FAUSTFLOAT*>(zone)),
+        fGUI(ui), fZone(zone), fCache(REAL(-123456.654321))
+        {
+            ui->registerZone(zone, this);
+        }
+        
+    public:
+        
+        virtual ~uiTypedItem()
+        {}
+    
+        void modifyZone(REAL v)
+        {
+            fCache = v;
+            if (*fZone != v) {
+                *fZone = v;
+                fGUI->updateZone(fZone);
+            }
+        }
+    
+        double cache() { return fCache; }
+    
+};
+
+class uiItem : public uiTypedItem<FAUSTFLOAT> {
+    
+    protected:
+    
+        uiItem(GUI* ui, FAUSTFLOAT* zone):uiTypedItem<FAUSTFLOAT>(ui, zone)
+        {}
+
+    public:
+
+        virtual ~uiItem() 
+        {}
+
+		void modifyZone(FAUSTFLOAT v)
+		{
+			fCache = v;
+			if (*fZone != v) {
+				*fZone = v;
+				fGUI->updateZone(fZone);
+			}
+		}
+
+};
+
+/**
+ * Base class for items with a converter
+ */
+
+struct uiConverter {
+    
+    ValueConverter* fConverter;
+    
+    uiConverter(MetaDataUI::Scale scale, FAUSTFLOAT umin, FAUSTFLOAT umax, FAUSTFLOAT fmin, FAUSTFLOAT fmax)
+    {
+        // Select appropriate converter according to scale mode
+        if (scale == MetaDataUI::kLog) {
+            fConverter = new LogValueConverter(umin, umax, fmin, fmax);
+        } else if (scale == MetaDataUI::kExp) {
+            fConverter = new ExpValueConverter(umin, umax, fmin, fmax);
+        } else {
+            fConverter = new LinearValueConverter(umin, umax, fmin, fmax);
+        }
+    }
+    
+    virtual ~uiConverter()
+    {
+        delete fConverter;
+    }
+};
+
+/**
+ * User Interface item owned (and so deleted) by external code
+ */
+
+class uiOwnedItem : public uiItem {
+    
+    protected:
+    
+        uiOwnedItem(GUI* ui, FAUSTFLOAT* zone):uiItem(ui, zone)
+        {}
+    
+     public:
+    
+        virtual ~uiOwnedItem()
+        {}
+    
+        virtual void reflectZone() {}
+};
+
+/**
+ * Callback Item
+ */
+
+class uiCallbackItem : public uiItem {
+    
+    protected:
+    
+        uiCallback fCallback;
+        void* fData;
+    
+    public:
+    
+        uiCallbackItem(GUI* ui, FAUSTFLOAT* zone, uiCallback foo, void* data)
+        : uiItem(ui, zone), fCallback(foo), fData(data) {}
+        
+        virtual void reflectZone() 
+        {		
+            FAUSTFLOAT v = *fZone;
+            fCache = v; 
+            fCallback(v, fData);	
+        }
+};
+
+/**
+ *  For timestamped control
+ */
+
+struct DatedControl {
+    
+    double fDate;
+    FAUSTFLOAT fValue;
+    
+    DatedControl(double d = 0., FAUSTFLOAT v = FAUSTFLOAT(0)):fDate(d), fValue(v) {}
+    
+};
+
+/**
+ * Base class for timed items
+ */
+
+class uiTimedItem : public uiItem
+{
+    
+    protected:
+        
+        bool fDelete;
+        
+    public:
+    
+        using uiItem::modifyZone;
+        
+        uiTimedItem(GUI* ui, FAUSTFLOAT* zone):uiItem(ui, zone)
+        {
+            if (GUI::gTimedZoneMap.find(fZone) == GUI::gTimedZoneMap.end()) {
+                GUI::gTimedZoneMap[fZone] = ringbuffer_create(8192);
+                fDelete = true;
+            } else {
+                fDelete = false;
+            }
+        }
+        
+        virtual ~uiTimedItem()
+        {
+            ztimedmap::iterator it;
+            if (fDelete && ((it = GUI::gTimedZoneMap.find(fZone)) != GUI::gTimedZoneMap.end())) {
+                ringbuffer_free((*it).second);
+                GUI::gTimedZoneMap.erase(it);
+            }
+        }
+        
+        virtual void modifyZone(double date, FAUSTFLOAT v)
+        {
+            size_t res;
+            DatedControl dated_val(date, v);
+            if ((res = ringbuffer_write(GUI::gTimedZoneMap[fZone], (const char*)&dated_val, sizeof(DatedControl))) != sizeof(DatedControl)) {
+                std::cerr << "ringbuffer_write error DatedControl" << std::endl;
+            }
+        }
+    
+};
+
+/**
+ * Allows to group a set of zones
+ */
+
+class uiGroupItem : public uiItem
+{
+    protected:
+    
+        std::vector<FAUSTFLOAT*> fZoneMap;
+
+    public:
+    
+        uiGroupItem(GUI* ui, FAUSTFLOAT* zone):uiItem(ui, zone)
+        {}
+        virtual ~uiGroupItem() 
+        {}
+        
+        virtual void reflectZone() 
+        {
+            FAUSTFLOAT v = *fZone;
+            fCache = v;
+            
+            // Update all zones of the same group
+            for (auto& it : fZoneMap) {
+                *it = v;
+            }
+        }
+        
+        void addZone(FAUSTFLOAT* zone) { fZoneMap.push_back(zone); }
+
+};
+
+// Can not be defined as method in the classes
+
+static void createUiCallbackItem(GUI* ui, FAUSTFLOAT* zone, uiCallback foo, void* data)
+{
+    new uiCallbackItem(ui, zone, foo, data);
+}
+
+static void deleteClist(clist* cl)
+{
+    for (auto& it : *cl) {
+        uiOwnedItem* owned = dynamic_cast<uiOwnedItem*>(it);
+        // owned items are deleted by external code
+        if (!owned) {
+            delete it;
+        }
+    }
+}
+
+#endif
+/**************************  END  GUI.h **************************/
+/************************** BEGIN JSONUI.h **************************/
+/************************************************************************
+ FAUST Architecture File
+ Copyright (C) 2003-2017 GRAME, Centre National de Creation Musicale
+ ---------------------------------------------------------------------
+ This Architecture section is free software; you can redistribute it
+ and/or modify it under the terms of the GNU General Public License
+ as published by the Free Software Foundation; either version 3 of
+ the License, or (at your option) any later version.
+ 
+ This program is distributed in the hope that it will be useful,
+ but WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ GNU General Public License for more details.
+ 
+ You should have received a copy of the GNU General Public License
+ along with this program; If not, see <http://www.gnu.org/licenses/>.
+ 
+ EXCEPTION : As a special exception, you may create a larger work
+ that contains this FAUST architecture section and distribute
+ that work under terms of your choice, so long as this FAUST
+ architecture section is not modified.
+ ************************************************************************/
+ 
+#ifndef FAUST_JSONUI_H
+#define FAUST_JSONUI_H
+
+#include <vector>
+#include <map>
+#include <string>
+#include <iostream>
+#include <iomanip>
+#include <sstream>
+#include <algorithm>
+
+
+/*******************************************************************************
+ * JSONUI : Faust User Interface
+ * This class produce a complete JSON decription of the DSP instance.
+ ******************************************************************************/
+
+template <typename REAL>
+class JSONUIReal : public PathBuilder, public Meta, public UIReal<REAL>
+{
+
+    protected:
+    
+        std::stringstream fUI;
+        std::stringstream fMeta;
+        std::vector<std::pair <std::string, std::string> > fMetaAux;
+        std::string fVersion;           // Compiler version
+        std::string fCompileOptions;    // Compilation options
+        std::vector<std::string> fLibraryList;
+        std::vector<std::string> fIncludePathnames;
+        std::string fName;
+        std::string fFileName;
+        std::string fExpandedCode;
+        std::string fSHAKey;
+        int fDSPSize;                   // In bytes
+        std::map<std::string, int> fPathTable;
+        bool fExtended;
+    
+        char fCloseUIPar;
+        char fCloseMetaPar;
+        int fTab;
+    
+        int fInputs, fOutputs, fSRIndex;
+         
+        void tab(int n, std::ostream& fout)
+        {
+            fout << '\n';
+            while (n-- > 0) {
+                fout << '\t';
+            }
+        }
+    
+        std::string flatten(const std::string& src)
+        {
+            std::string dst;
+            for (size_t i = 0; i < src.size(); i++) {
+                switch (src[i]) {
+                    case '\n':
+                    case '\t':
+                        break;
+                    default:
+                        dst += src[i];
+                        break;
+                }
+            }
+            return dst;
+        }
+    
+        void addMeta(int tab_val, bool quote = true)
+        {
+            if (fMetaAux.size() > 0) {
+                tab(tab_val, fUI); fUI << "\"meta\": [";
+                std::string sep = "";
+                for (size_t i = 0; i < fMetaAux.size(); i++) {
+                    fUI << sep;
+                    tab(tab_val + 1, fUI); fUI << "{ \"" << fMetaAux[i].first << "\": \"" << fMetaAux[i].second << "\" }";
+                    sep = ",";
+                }
+                tab(tab_val, fUI); fUI << ((quote) ? "],": "]");
+                fMetaAux.clear();
+            }
+        }
+    
+        int getAddressIndex(const std::string& path)
+        {
+            return (fPathTable.find(path) != fPathTable.end()) ? fPathTable[path] : -1;
+        }
+      
+     public:
+     
+        JSONUIReal(const std::string& name,
+                  const std::string& filename,
+                  int inputs,
+                  int outputs,
+                  int sr_index,
+                  const std::string& sha_key,
+                  const std::string& dsp_code,
+                  const std::string& version,
+                  const std::string& compile_options,
+                  const std::vector<std::string>& library_list,
+                  const std::vector<std::string>& include_pathnames,
+                  int size,
+                  const std::map<std::string, int>& path_table)
+        {
+            init(name, filename, inputs, outputs, sr_index, sha_key, dsp_code, version, compile_options, library_list, include_pathnames, size, path_table);
+        }
+
+        JSONUIReal(const std::string& name, const std::string& filename, int inputs, int outputs)
+        {
+            init(name, filename, inputs, outputs, -1, "", "", "", "", std::vector<std::string>(), std::vector<std::string>(), -1, std::map<std::string, int>());
+        }
+
+        JSONUIReal(int inputs, int outputs)
+        {
+            init("", "", inputs, outputs, -1, "", "","", "", std::vector<std::string>(), std::vector<std::string>(), -1, std::map<std::string, int>());
+        }
+        
+        JSONUIReal()
+        {
+            init("", "", -1, -1, -1, "", "", "", "", std::vector<std::string>(), std::vector<std::string>(), -1, std::map<std::string, int>());
+        }
+ 
+        virtual ~JSONUIReal() {}
+        
+        void setInputs(int inputs) { fInputs = inputs; }
+        void setOutputs(int outputs) { fOutputs = outputs; }
+    
+        void setSRIndex(int sr_index) { fSRIndex = sr_index; }
+    
+        // Init may be called multiple times so fMeta and fUI are reinitialized
+        void init(const std::string& name,
+                  const std::string& filename,
+                  int inputs,
+                  int outputs,
+                  int sr_index,
+                  const std::string& sha_key,
+                  const std::string& dsp_code,
+                  const std::string& version,
+                  const std::string& compile_options,
+                  const std::vector<std::string>& library_list,
+                  const std::vector<std::string>& include_pathnames,
+                  int size,
+                  const std::map<std::string, int>& path_table,
+                  bool extended = false)
+        {
+            fTab = 1;
+            fExtended = extended;
+            if (fExtended) {
+                fUI << std::setprecision(std::numeric_limits<REAL>::max_digits10);
+                fMeta << std::setprecision(std::numeric_limits<REAL>::max_digits10);
+            }
+            
+            // Start Meta generation
+            fMeta.str("");
+            tab(fTab, fMeta); fMeta << "\"meta\": [";
+            fCloseMetaPar = ' ';
+            
+            // Start UI generation
+            fUI.str("");
+            tab(fTab, fUI); fUI << "\"ui\": [";
+            fCloseUIPar = ' ';
+            fTab += 1;
+            
+            fName = name;
+            fFileName = filename;
+            fInputs = inputs;
+            fOutputs = outputs;
+            fSRIndex = sr_index;
+            fExpandedCode = dsp_code;
+            fSHAKey = sha_key;
+            fDSPSize = size;
+            fPathTable = path_table;
+            fVersion = version;
+            fCompileOptions = compile_options;
+            fLibraryList = library_list;
+            fIncludePathnames = include_pathnames;
+        }
+   
+        // -- widget's layouts
+    
+        virtual void openGenericGroup(const char* label, const char* name)
+        {
+            pushLabel(label);
+            fUI << fCloseUIPar;
+            tab(fTab, fUI); fUI << "{";
+            fTab += 1;
+            tab(fTab, fUI); fUI << "\"type\": \"" << name << "\",";
+            tab(fTab, fUI); fUI << "\"label\": \"" << label << "\",";
+            addMeta(fTab);
+            tab(fTab, fUI); fUI << "\"items\": [";
+            fCloseUIPar = ' ';
+            fTab += 1;
+        }
+
+        virtual void openTabBox(const char* label)
+        {
+            openGenericGroup(label, "tgroup");
+        }
+    
+        virtual void openHorizontalBox(const char* label)
+        {
+            openGenericGroup(label, "hgroup");
+        }
+    
+        virtual void openVerticalBox(const char* label)
+        {
+            openGenericGroup(label, "vgroup");
+        }
+    
+        virtual void closeBox()
+        {
+            popLabel();
+            fTab -= 1;
+            tab(fTab, fUI); fUI << "]";
+            fTab -= 1;
+            tab(fTab, fUI); fUI << "}";
+            fCloseUIPar = ',';
+        }
+    
+        // -- active widgets
+  
+        virtual void addGenericButton(const char* label, const char* name)
+        {
+            std::string path = buildPath(label);
+            
+            fUI << fCloseUIPar;
+            tab(fTab, fUI); fUI << "{";
+            fTab += 1;
+            tab(fTab, fUI); fUI << "\"type\": \"" << name << "\",";
+            tab(fTab, fUI); fUI << "\"label\": \"" << label << "\",";
+            if (fPathTable.size() > 0) {
+                tab(fTab, fUI); fUI << "\"address\": \"" << path << "\",";
+                tab(fTab, fUI); fUI << "\"index\": " << getAddressIndex(path) << ((fMetaAux.size() > 0) ? "," : "");
+            } else {
+                tab(fTab, fUI); fUI << "\"address\": \"" << path << "\"" << ((fMetaAux.size() > 0) ? "," : "");
+            }
+            addMeta(fTab, false);
+            fTab -= 1;
+            tab(fTab, fUI); fUI << "}";
+            fCloseUIPar = ',';
+        }
+
+        virtual void addButton(const char* label, REAL* zone)
+        {
+            addGenericButton(label, "button");
+        }
+    
+        virtual void addCheckButton(const char* label, REAL* zone)
+        {
+            addGenericButton(label, "checkbox");
+        }
+
+        virtual void addGenericEntry(const char* label, const char* name, REAL init, REAL min, REAL max, REAL step)
+        {
+            std::string path = buildPath(label);
+            
+            fUI << fCloseUIPar;
+            tab(fTab, fUI); fUI << "{";
+            fTab += 1;
+            tab(fTab, fUI); fUI << "\"type\": \"" << name << "\",";
+            tab(fTab, fUI); fUI << "\"label\": \"" << label << "\",";
+            tab(fTab, fUI); fUI << "\"address\": \"" << path << "\",";
+            if (fPathTable.size() > 0) {
+                tab(fTab, fUI); fUI << "\"index\": " << getAddressIndex(path) << ",";
+            }
+            addMeta(fTab);
+            tab(fTab, fUI); fUI << "\"init\": " << init << ",";
+            tab(fTab, fUI); fUI << "\"min\": " << min << ",";
+            tab(fTab, fUI); fUI << "\"max\": " << max << ",";
+            tab(fTab, fUI); fUI << "\"step\": " << step;
+            fTab -= 1;
+            tab(fTab, fUI); fUI << "}";
+            fCloseUIPar = ',';
+        }
+    
+        virtual void addVerticalSlider(const char* label, REAL* zone, REAL init, REAL min, REAL max, REAL step)
+        {
+            addGenericEntry(label, "vslider", init, min, max, step);
+        }
+    
+        virtual void addHorizontalSlider(const char* label, REAL* zone, REAL init, REAL min, REAL max, REAL step)
+        {
+            addGenericEntry(label, "hslider", init, min, max, step);
+        }
+    
+        virtual void addNumEntry(const char* label, REAL* zone, REAL init, REAL min, REAL max, REAL step)
+        {
+            addGenericEntry(label, "nentry", init, min, max, step);
+        }
+
+        // -- passive widgets
+    
+        virtual void addGenericBargraph(const char* label, const char* name, REAL min, REAL max) 
+        {
+            std::string path = buildPath(label);
+            
+            fUI << fCloseUIPar;
+            tab(fTab, fUI); fUI << "{";
+            fTab += 1;
+            tab(fTab, fUI); fUI << "\"type\": \"" << name << "\",";
+            tab(fTab, fUI); fUI << "\"label\": \"" << label << "\",";
+            tab(fTab, fUI); fUI << "\"address\": \"" << path << "\",";
+            if (fPathTable.size() > 0) {
+                tab(fTab, fUI); fUI << "\"index\": " << getAddressIndex(path) << ",";
+            }
+            addMeta(fTab);
+            tab(fTab, fUI); fUI << "\"min\": " << min << ",";
+            tab(fTab, fUI); fUI << "\"max\": " << max;
+            fTab -= 1;
+            tab(fTab, fUI); fUI << "}";
+            fCloseUIPar = ',';
+        }
+
+        virtual void addHorizontalBargraph(const char* label, REAL* zone, REAL min, REAL max) 
+        {
+            addGenericBargraph(label, "hbargraph", min, max);
+        }
+    
+        virtual void addVerticalBargraph(const char* label, REAL* zone, REAL min, REAL max)
+        {
+            addGenericBargraph(label, "vbargraph", min, max);
+        }
+    
+        virtual void addSoundfile(const char* label, const char* url, Soundfile** zone)
+        {
+            std::string path = buildPath(label);
+            
+            fUI << fCloseUIPar;
+            tab(fTab, fUI); fUI << "{";
+            fTab += 1;
+            tab(fTab, fUI); fUI << "\"type\": \"" << "soundfile" << "\",";
+            tab(fTab, fUI); fUI << "\"label\": \"" << label << "\"" << ",";
+            tab(fTab, fUI); fUI << "\"url\": \"" << url << "\"" << ",";
+            tab(fTab, fUI); fUI << "\"address\": \"" << path << "\"" << ((fPathTable.size() > 0) ? "," : "");
+            if (fPathTable.size() > 0) {
+                tab(fTab, fUI); fUI << "\"index\": " << getAddressIndex(path);
+            }
+            fTab -= 1;
+            tab(fTab, fUI); fUI << "}";
+            fCloseUIPar = ',';
+        }
+
+        // -- metadata declarations
+
+        virtual void declare(REAL* zone, const char* key, const char* val)
+        {
+            fMetaAux.push_back(std::make_pair(key, val));
+        }
+    
+        // Meta interface
+        virtual void declare(const char* key, const char* value)
+        {
+            fMeta << fCloseMetaPar;
+            // fName found in metadata
+            if ((strcmp(key, "name") == 0) && (fName == "")) fName = value;
+            // fFileName found in metadata
+            if ((strcmp(key, "filename") == 0) && (fFileName == "")) fFileName = value;
+            tab(fTab, fMeta); fMeta << "{ " << "\"" << key << "\"" << ": " << "\"" << value << "\" }";
+            fCloseMetaPar = ',';
+        }
+    
+        std::string JSON(bool flat = false)
+        {
+            fTab = 0;
+            std::stringstream JSON;
+            if (fExtended) {
+                JSON << std::setprecision(std::numeric_limits<REAL>::max_digits10);
+            }
+            JSON << "{";
+            fTab += 1;
+            tab(fTab, JSON); JSON << "\"name\": \"" << fName << "\",";
+            tab(fTab, JSON); JSON << "\"filename\": \"" << fFileName << "\",";
+            if (fVersion != "") { tab(fTab, JSON); JSON << "\"version\": \"" << fVersion << "\","; }
+            if (fCompileOptions != "") { tab(fTab, JSON); JSON << "\"compile_options\": \"" <<  fCompileOptions << "\","; }
+            if (fLibraryList.size() > 0) {
+                tab(fTab, JSON);
+                JSON << "\"library_list\": [";
+                for (size_t i = 0; i < fLibraryList.size(); i++) {
+                    JSON << "\"" << fLibraryList[i] << "\"";
+                    if (i < (fLibraryList.size() - 1)) JSON << ",";
+                }
+                JSON << "],";
+            }
+            if (fIncludePathnames.size() > 0) {
+                tab(fTab, JSON);
+                JSON << "\"include_pathnames\": [";
+                for (size_t i = 0; i < fIncludePathnames.size(); i++) {
+                    JSON << "\"" << fIncludePathnames[i] << "\"";
+                    if (i < (fIncludePathnames.size() - 1)) JSON << ",";
+                }
+                JSON << "],";
+            }
+            if (fDSPSize != -1) { tab(fTab, JSON); JSON << "\"size\": " << fDSPSize << ","; }
+            if (fSHAKey != "") { tab(fTab, JSON); JSON << "\"sha_key\": \"" << fSHAKey << "\","; }
+            if (fExpandedCode != "") { tab(fTab, JSON); JSON << "\"code\": \"" << fExpandedCode << "\","; }
+            tab(fTab, JSON); JSON << "\"inputs\": " << fInputs << ",";
+            tab(fTab, JSON); JSON << "\"outputs\": " << fOutputs << ",";
+            if (fSRIndex != -1) { tab(fTab, JSON); JSON << "\"sr_index\": " << fSRIndex << ","; }
+            tab(fTab, fMeta); fMeta << "],";
+            tab(fTab, fUI); fUI << "]";
+            fTab -= 1;
+            if (fCloseMetaPar == ',') { // If "declare" has been called, fCloseMetaPar state is now ','
+                JSON << fMeta.str() << fUI.str();
+            } else {
+                JSON << fUI.str();
+            }
+            tab(fTab, JSON); JSON << "}";
+            return (flat) ? flatten(JSON.str()) : JSON.str();
+        }
+    
+};
+
+// Externally available class using FAUSTFLOAT
+
+struct JSONUI : public JSONUIReal<FAUSTFLOAT>, public UI
+{
+    
+    JSONUI(const std::string& name,
+           const std::string& filename,
+           int inputs,
+           int outputs,
+           int sr_index,
+           const std::string& sha_key,
+           const std::string& dsp_code,
+           const std::string& version,
+           const std::string& compile_options,
+           const std::vector<std::string>& library_list,
+           const std::vector<std::string>& include_pathnames,
+           int size,
+           const std::map<std::string, int>& path_table):
+    JSONUIReal<FAUSTFLOAT>(name, filename,
+                          inputs, outputs,
+                          sr_index,
+                          sha_key, dsp_code,
+                          version, compile_options,
+                          library_list, include_pathnames,
+                          size, path_table)
+    {}
+    
+    JSONUI(const std::string& name, const std::string& filename, int inputs, int outputs):
+    JSONUIReal<FAUSTFLOAT>(name, filename, inputs, outputs)
+    {}
+    
+    JSONUI(int inputs, int outputs):JSONUIReal<FAUSTFLOAT>(inputs, outputs)
+    {}
+    
+    JSONUI():JSONUIReal<FAUSTFLOAT>()
+    {}
+
+    virtual void openTabBox(const char* label)
+    {
+        JSONUIReal<FAUSTFLOAT>::openTabBox(label);
+    }
+    virtual void openHorizontalBox(const char* label)
+    {
+        JSONUIReal<FAUSTFLOAT>::openHorizontalBox(label);
+    }
+    virtual void openVerticalBox(const char* label)
+    {
+        JSONUIReal<FAUSTFLOAT>::openVerticalBox(label);
+    }
+    virtual void closeBox()
+    {
+        JSONUIReal<FAUSTFLOAT>::closeBox();
+    }
+    
+    // -- active widgets
+    
+    virtual void addButton(const char* label, FAUSTFLOAT* zone)
+    {
+        JSONUIReal<FAUSTFLOAT>::addButton(label, zone);
+    }
+    virtual void addCheckButton(const char* label, FAUSTFLOAT* zone)
+    {
+        JSONUIReal<FAUSTFLOAT>::addCheckButton(label, zone);
+    }
+    virtual void addVerticalSlider(const char* label, FAUSTFLOAT* zone, FAUSTFLOAT init, FAUSTFLOAT min, FAUSTFLOAT max, FAUSTFLOAT step)
+    {
+        JSONUIReal<FAUSTFLOAT>::addVerticalSlider(label, zone, init, min, max, step);
+    }
+    virtual void addHorizontalSlider(const char* label, FAUSTFLOAT* zone, FAUSTFLOAT init, FAUSTFLOAT min, FAUSTFLOAT max, FAUSTFLOAT step)
+    {
+        JSONUIReal<FAUSTFLOAT>::addHorizontalSlider(label, zone, init, min, max, step);
+    }
+    virtual void addNumEntry(const char* label, FAUSTFLOAT* zone, FAUSTFLOAT init, FAUSTFLOAT min, FAUSTFLOAT max, FAUSTFLOAT step)
+    {
+        JSONUIReal<FAUSTFLOAT>::addNumEntry(label, zone, init, min, max, step);
+    }
+    
+    // -- passive widgets
+    
+    virtual void addHorizontalBargraph(const char* label, FAUSTFLOAT* zone, FAUSTFLOAT min, FAUSTFLOAT max)
+    {
+        JSONUIReal<FAUSTFLOAT>::addHorizontalBargraph(label, zone, min, max);
+    }
+    virtual void addVerticalBargraph(const char* label, FAUSTFLOAT* zone, FAUSTFLOAT min, FAUSTFLOAT max)
+    {
+        JSONUIReal<FAUSTFLOAT>::addVerticalBargraph(label, zone, min, max);
+    }
+    
+    // -- soundfiles
+    
+    virtual void addSoundfile(const char* label, const char* filename, Soundfile** sf_zone)
+    {
+        JSONUIReal<FAUSTFLOAT>::addSoundfile(label, filename, sf_zone);
+    }
+    
+    // -- metadata declarations
+    
+    virtual void declare(FAUSTFLOAT* zone, const char* key, const char* val)
+    {
+        JSONUIReal<FAUSTFLOAT>::declare(zone, key, val);
+    }
+
+    virtual void declare(const char* key, const char* val)
+    {
+        JSONUIReal<FAUSTFLOAT>::declare(key, val);
+    }
+
+    virtual ~JSONUI() {}
+    
+};
+
+#endif // FAUST_JSONUI_H
+/**************************  END  JSONUI.h **************************/
 /************************** BEGIN midi.h **************************/
 /************************************************************************
  FAUST Architecture File
@@ -3745,568 +4334,6 @@ struct DatedMessage {
 
 #endif // __midi__
 /**************************  END  midi.h **************************/
-/************************** BEGIN ValueConverter.h **************************/
-/************************************************************************
- FAUST Architecture File
- Copyright (C) 2003-2017 GRAME, Centre National de Creation Musicale
- ---------------------------------------------------------------------
- This Architecture section is free software; you can redistribute it
- and/or modify it under the terms of the GNU General Public License
- as published by the Free Software Foundation; either version 3 of
- the License, or (at your option) any later version.
- 
- This program is distributed in the hope that it will be useful,
- but WITHOUT ANY WARRANTY; without even the implied warranty of
- MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- GNU General Public License for more details.
- 
- You should have received a copy of the GNU General Public License
- along with this program; If not, see <http://www.gnu.org/licenses/>.
- 
- EXCEPTION : As a special exception, you may create a larger work
- that contains this FAUST architecture section and distribute
- that work under terms of your choice, so long as this FAUST
- architecture section is not modified.
- ************************************************************************/
-
-#ifndef __ValueConverter__
-#define __ValueConverter__
-
-/***************************************************************************************
-								ValueConverter.h
-                            (GRAME, Copyright 2015-2019)
-
-Set of conversion objects used to map user interface values (for example a gui slider
-delivering values between 0 and 1) to faust values (for example a vslider between
-20 and 20000) using a log scale.
-
--- Utilities
-
-Range(lo,hi) : clip a value x between lo and hi
-Interpolator(lo,hi,v1,v2) : Maps a value x between lo and hi to a value y between v1 and v2
-Interpolator3pt(lo,mi,hi,v1,vm,v2) : Map values between lo mid hi to values between v1 vm v2
-
--- Value Converters
-
-ValueConverter::ui2faust(x)
-ValueConverter::faust2ui(x)
-
--- ValueConverters used for sliders depending of the scale
-
-LinearValueConverter(umin, umax, fmin, fmax)
-LinearValueConverter2(lo, mi, hi, v1, vm, v2) using 2 segments
-LogValueConverter(umin, umax, fmin, fmax)
-ExpValueConverter(umin, umax, fmin, fmax)
-
--- ValueConverters used for accelerometers based on 3 points
-
-AccUpConverter(amin, amid, amax, fmin, fmid, fmax)		-- curve 0
-AccDownConverter(amin, amid, amax, fmin, fmid, fmax)	-- curve 1
-AccUpDownConverter(amin, amid, amax, fmin, fmid, fmax)	-- curve 2
-AccDownUpConverter(amin, amid, amax, fmin, fmid, fmax)	-- curve 3
-
--- lists of ZoneControl are used to implement accelerometers metadata for each axes
-
-ZoneControl(zone, valueConverter) : a zone with an accelerometer data converter
-
--- ZoneReader are used to implement screencolor metadata
-
-ZoneReader(zone, valueConverter) : a zone with a data converter
-
-****************************************************************************************/
-
-#include <float.h>
-#include <algorithm>    // std::max
-#include <cmath>
-#include <vector>
-#include <assert.h>
-
-//--------------------------------------------------------------------------------------
-// Interpolator(lo,hi,v1,v2)
-// Maps a value x between lo and hi to a value y between v1 and v2
-// y = v1 + (x-lo)/(hi-lo)*(v2-v1)
-// y = v1 + (x-lo) * coef   		with coef = (v2-v1)/(hi-lo)
-// y = v1 + x*coef - lo*coef
-// y = v1 - lo*coef + x*coef
-// y = offset + x*coef				with offset = v1 - lo*coef
-//--------------------------------------------------------------------------------------
-class Interpolator
-{
-    private:
-
-        //--------------------------------------------------------------------------------------
-        // Range(lo,hi) clip a value between lo and hi
-        //--------------------------------------------------------------------------------------
-        struct Range
-        {
-            double fLo;
-            double fHi;
-
-            Range(double x, double y) : fLo(std::min<double>(x,y)), fHi(std::max<double>(x,y)) {}
-            double operator()(double x) { return (x<fLo) ? fLo : (x>fHi) ? fHi : x; }
-        };
-
-
-        Range fRange;
-        double fCoef;
-        double fOffset;
-
-    public:
-
-        Interpolator(double lo, double hi, double v1, double v2) : fRange(lo,hi)
-        {
-            if (hi != lo) {
-                // regular case
-                fCoef = (v2-v1)/(hi-lo);
-                fOffset = v1 - lo*fCoef;
-            } else {
-                // degenerate case, avoids division by zero
-                fCoef = 0;
-                fOffset = (v1+v2)/2;
-            }
-        }
-        double operator()(double v)
-        {
-            double x = fRange(v);
-            return  fOffset + x*fCoef;
-        }
-
-        void getLowHigh(double& amin, double& amax)
-        {
-            amin = fRange.fLo;
-            amax = fRange.fHi;
-        }
-};
-
-//--------------------------------------------------------------------------------------
-// Interpolator3pt(lo,mi,hi,v1,vm,v2)
-// Map values between lo mid hi to values between v1 vm v2
-//--------------------------------------------------------------------------------------
-class Interpolator3pt
-{
-
-    private:
-
-        Interpolator fSegment1;
-        Interpolator fSegment2;
-        double fMid;
-
-    public:
-
-        Interpolator3pt(double lo, double mi, double hi, double v1, double vm, double v2) :
-            fSegment1(lo, mi, v1, vm),
-            fSegment2(mi, hi, vm, v2),
-            fMid(mi) {}
-        double operator()(double x) { return  (x < fMid) ? fSegment1(x) : fSegment2(x); }
-
-        void getMappingValues(double& amin, double& amid, double& amax)
-        {
-            fSegment1.getLowHigh(amin, amid);
-            fSegment2.getLowHigh(amid, amax);
-        }
-};
-
-//--------------------------------------------------------------------------------------
-// Abstract ValueConverter class. Converts values between UI and Faust representations
-//--------------------------------------------------------------------------------------
-class ValueConverter
-{
-
-    public:
-
-        virtual ~ValueConverter() {}
-        virtual double ui2faust(double x) = 0;
-        virtual double faust2ui(double x) = 0;
-};
-
-//--------------------------------------------------------------------------------------
-// A converter than can be updated
-//--------------------------------------------------------------------------------------
-
-class UpdatableValueConverter : public ValueConverter {
-    
-    protected:
-        
-        bool fActive;
-        
-    public:
-        
-        UpdatableValueConverter():fActive(true)
-        {}
-        virtual ~UpdatableValueConverter()
-        {}
-        
-        virtual void setMappingValues(double amin, double amid, double amax, double min, double init, double max) = 0;
-        virtual void getMappingValues(double& amin, double& amid, double& amax) = 0;
-        
-        void setActive(bool on_off) { fActive = on_off; }
-        bool getActive() { return fActive; }
-    
-};
-
-
-//--------------------------------------------------------------------------------------
-// Linear conversion between ui and Faust values
-//--------------------------------------------------------------------------------------
-class LinearValueConverter : public ValueConverter
-{
-    
-    private:
-        
-        Interpolator fUI2F;
-        Interpolator fF2UI;
-        
-    public:
-        
-        LinearValueConverter(double umin, double umax, double fmin, double fmax) :
-            fUI2F(umin,umax,fmin,fmax), fF2UI(fmin,fmax,umin,umax)
-        {}
-        
-        LinearValueConverter() : fUI2F(0.,0.,0.,0.), fF2UI(0.,0.,0.,0.)
-        {}
-        virtual double ui2faust(double x) { return fUI2F(x); }
-        virtual double faust2ui(double x) { return fF2UI(x); }
-    
-};
-
-//--------------------------------------------------------------------------------------
-// Two segments linear conversion between ui and Faust values
-//--------------------------------------------------------------------------------------
-class LinearValueConverter2 : public UpdatableValueConverter
-{
-    
-    private:
-    
-        Interpolator3pt fUI2F;
-        Interpolator3pt fF2UI;
-        
-    public:
-    
-        LinearValueConverter2(double amin, double amid, double amax, double min, double init, double max) :
-            fUI2F(amin, amid, amax, min, init, max), fF2UI(min, init, max, amin, amid, amax)
-        {}
-        
-        LinearValueConverter2() : fUI2F(0.,0.,0.,0.,0.,0.), fF2UI(0.,0.,0.,0.,0.,0.)
-        {}
-    
-        virtual double ui2faust(double x) { return fUI2F(x); }
-        virtual double faust2ui(double x) { return fF2UI(x); }
-    
-        virtual void setMappingValues(double amin, double amid, double amax, double min, double init, double max)
-        {
-            fUI2F = Interpolator3pt(amin, amid, amax, min, init, max);
-            fF2UI = Interpolator3pt(min, init, max, amin, amid, amax);
-        }
-
-        virtual void getMappingValues(double& amin, double& amid, double& amax)
-        {
-            fUI2F.getMappingValues(amin, amid, amax);
-        }
-    
-};
-
-//--------------------------------------------------------------------------------------
-// Logarithmic conversion between ui and Faust values
-//--------------------------------------------------------------------------------------
-class LogValueConverter : public LinearValueConverter
-{
-
-    public:
-
-        LogValueConverter(double umin, double umax, double fmin, double fmax) :
-        LinearValueConverter(umin, umax, log(std::max<double>(DBL_MIN, fmin)), std::log(std::max<double>(DBL_MIN, fmax)))
-        {}
-
-        virtual double ui2faust(double x) { return std::exp(LinearValueConverter::ui2faust(x)); }
-        virtual double faust2ui(double x) { return LinearValueConverter::faust2ui(std::log(std::max<double>(x, DBL_MIN))); }
-
-};
-
-//--------------------------------------------------------------------------------------
-// Exponential conversion between ui and Faust values
-//--------------------------------------------------------------------------------------
-class ExpValueConverter : public LinearValueConverter
-{
-
-    public:
-
-        ExpValueConverter(double umin, double umax, double fmin, double fmax) :
-            LinearValueConverter(umin, umax, exp(fmin), exp(fmax))
-        {}
-
-        virtual double ui2faust(double x) { return std::log(LinearValueConverter::ui2faust(x)); }
-        virtual double faust2ui(double x) { return LinearValueConverter::faust2ui(std::exp(x)); }
-
-};
-
-//--------------------------------------------------------------------------------------
-// Convert accelerometer or gyroscope values to Faust values
-// Using an Up curve (curve 0)
-//--------------------------------------------------------------------------------------
-class AccUpConverter : public UpdatableValueConverter
-{
-
-    private:
-
-        Interpolator3pt fA2F;
-        Interpolator3pt fF2A;
-
-    public:
-
-        AccUpConverter(double amin, double amid, double amax, double fmin, double fmid, double fmax) :
-            fA2F(amin,amid,amax,fmin,fmid,fmax),
-            fF2A(fmin,fmid,fmax,amin,amid,amax)
-        {}
-
-        virtual double ui2faust(double x) { return fA2F(x); }
-        virtual double faust2ui(double x) { return fF2A(x); }
-
-        virtual void setMappingValues(double amin, double amid, double amax, double fmin, double fmid, double fmax)
-        {
-            //__android_log_print(ANDROID_LOG_ERROR, "Faust", "AccUpConverter update %f %f %f %f %f %f", amin,amid,amax,fmin,fmid,fmax);
-            fA2F = Interpolator3pt(amin, amid, amax, fmin, fmid, fmax);
-            fF2A = Interpolator3pt(fmin, fmid, fmax, amin, amid, amax);
-        }
-
-        virtual void getMappingValues(double& amin, double& amid, double& amax)
-        {
-            fA2F.getMappingValues(amin, amid, amax);
-        }
-
-};
-
-//--------------------------------------------------------------------------------------
-// Convert accelerometer or gyroscope values to Faust values
-// Using a Down curve (curve 1)
-//--------------------------------------------------------------------------------------
-class AccDownConverter : public UpdatableValueConverter
-{
-
-    private:
-
-        Interpolator3pt	fA2F;
-        Interpolator3pt	fF2A;
-
-    public:
-
-        AccDownConverter(double amin, double amid, double amax, double fmin, double fmid, double fmax) :
-            fA2F(amin,amid,amax,fmax,fmid,fmin),
-            fF2A(fmin,fmid,fmax,amax,amid,amin)
-        {}
-
-        virtual double ui2faust(double x) { return fA2F(x); }
-        virtual double faust2ui(double x) { return fF2A(x); }
-
-        virtual void setMappingValues(double amin, double amid, double amax, double fmin, double fmid, double fmax)
-        {
-             //__android_log_print(ANDROID_LOG_ERROR, "Faust", "AccDownConverter update %f %f %f %f %f %f", amin,amid,amax,fmin,fmid,fmax);
-            fA2F = Interpolator3pt(amin, amid, amax, fmax, fmid, fmin);
-            fF2A = Interpolator3pt(fmin, fmid, fmax, amax, amid, amin);
-        }
-
-        virtual void getMappingValues(double& amin, double& amid, double& amax)
-        {
-            fA2F.getMappingValues(amin, amid, amax);
-        }
-};
-
-//--------------------------------------------------------------------------------------
-// Convert accelerometer or gyroscope values to Faust values
-// Using an Up-Down curve (curve 2)
-//--------------------------------------------------------------------------------------
-class AccUpDownConverter : public UpdatableValueConverter
-{
-
-    private:
-
-        Interpolator3pt	fA2F;
-        Interpolator fF2A;
-
-    public:
-
-        AccUpDownConverter(double amin, double amid, double amax, double fmin, double fmid, double fmax) :
-            fA2F(amin,amid,amax,fmin,fmax,fmin),
-            fF2A(fmin,fmax,amin,amax)				// Special, pseudo inverse of a non monotonic function
-        {}
-
-        virtual double ui2faust(double x) { return fA2F(x); }
-        virtual double faust2ui(double x) { return fF2A(x); }
-
-        virtual void setMappingValues(double amin, double amid, double amax, double fmin, double fmid, double fmax)
-        {
-            //__android_log_print(ANDROID_LOG_ERROR, "Faust", "AccUpDownConverter update %f %f %f %f %f %f", amin,amid,amax,fmin,fmid,fmax);
-            fA2F = Interpolator3pt(amin, amid, amax, fmin, fmax, fmin);
-            fF2A = Interpolator(fmin, fmax, amin, amax);
-        }
-
-        virtual void getMappingValues(double& amin, double& amid, double& amax)
-        {
-            fA2F.getMappingValues(amin, amid, amax);
-        }
-};
-
-//--------------------------------------------------------------------------------------
-// Convert accelerometer or gyroscope values to Faust values
-// Using a Down-Up curve (curve 3)
-//--------------------------------------------------------------------------------------
-class AccDownUpConverter : public UpdatableValueConverter
-{
-
-    private:
-
-        Interpolator3pt	fA2F;
-        Interpolator fF2A;
-
-    public:
-
-        AccDownUpConverter(double amin, double amid, double amax, double fmin, double fmid, double fmax) :
-            fA2F(amin,amid,amax,fmax,fmin,fmax),
-            fF2A(fmin,fmax,amin,amax)				// Special, pseudo inverse of a non monotonic function
-        {}
-
-        virtual double ui2faust(double x) { return fA2F(x); }
-        virtual double faust2ui(double x) { return fF2A(x); }
-
-        virtual void setMappingValues(double amin, double amid, double amax, double fmin, double fmid, double fmax)
-        {
-            //__android_log_print(ANDROID_LOG_ERROR, "Faust", "AccDownUpConverter update %f %f %f %f %f %f", amin,amid,amax,fmin,fmid,fmax);
-            fA2F = Interpolator3pt(amin, amid, amax, fmax, fmin, fmax);
-            fF2A = Interpolator(fmin, fmax, amin, amax);
-        }
-
-        virtual void getMappingValues(double& amin, double& amid, double& amax)
-        {
-            fA2F.getMappingValues(amin, amid, amax);
-        }
-};
-
-//--------------------------------------------------------------------------------------
-// Base class for ZoneControl
-//--------------------------------------------------------------------------------------
-class ZoneControl
-{
-
-    protected:
-
-        FAUSTFLOAT*	fZone;
-
-    public:
-
-        ZoneControl(FAUSTFLOAT* zone) : fZone(zone) {}
-        virtual ~ZoneControl() {}
-
-        virtual void update(double v) {}
-
-        virtual void setMappingValues(int curve, double amin, double amid, double amax, double min, double init, double max) {}
-        virtual void getMappingValues(double& amin, double& amid, double& amax) {}
-
-        FAUSTFLOAT* getZone() { return fZone; }
-
-        virtual void setActive(bool on_off) {}
-        virtual bool getActive() { return false; }
-
-        virtual int getCurve() { return -1; }
-
-};
-
-//--------------------------------------------------------------------------------------
-//  Useful to implement accelerometers metadata as a list of ZoneControl for each axes
-//--------------------------------------------------------------------------------------
-class ConverterZoneControl : public ZoneControl
-{
-
-    protected:
-
-        ValueConverter* fValueConverter;
-
-    public:
-
-        ConverterZoneControl(FAUSTFLOAT* zone, ValueConverter* converter) : ZoneControl(zone), fValueConverter(converter) {}
-        virtual ~ConverterZoneControl() { delete fValueConverter; } // Assuming fValueConverter is not kept elsewhere...
-
-        virtual void update(double v) { *fZone = fValueConverter->ui2faust(v); }
-
-        ValueConverter* getConverter() { return fValueConverter; }
-
-};
-
-//--------------------------------------------------------------------------------------
-// Association of a zone and a four value converter, each one for each possible curve.
-// Useful to implement accelerometers metadata as a list of ZoneControl for each axes
-//--------------------------------------------------------------------------------------
-class CurveZoneControl : public ZoneControl
-{
-
-    private:
-
-        std::vector<UpdatableValueConverter*> fValueConverters;
-        int fCurve;
-
-    public:
-
-        CurveZoneControl(FAUSTFLOAT* zone, int curve, double amin, double amid, double amax, double min, double init, double max) : ZoneControl(zone), fCurve(0)
-        {
-            assert(curve >= 0 && curve <= 3);
-            fValueConverters.push_back(new AccUpConverter(amin, amid, amax, min, init, max));
-            fValueConverters.push_back(new AccDownConverter(amin, amid, amax, min, init, max));
-            fValueConverters.push_back(new AccUpDownConverter(amin, amid, amax, min, init, max));
-            fValueConverters.push_back(new AccDownUpConverter(amin, amid, amax, min, init, max));
-            fCurve = curve;
-        }
-        virtual ~CurveZoneControl()
-        {
-            std::vector<UpdatableValueConverter*>::iterator it;
-            for (it = fValueConverters.begin(); it != fValueConverters.end(); it++) {
-                delete(*it);
-            }
-        }
-        void update(double v) { if (fValueConverters[fCurve]->getActive()) *fZone = fValueConverters[fCurve]->ui2faust(v); }
-
-        void setMappingValues(int curve, double amin, double amid, double amax, double min, double init, double max)
-        {
-            fValueConverters[curve]->setMappingValues(amin, amid, amax, min, init, max);
-            fCurve = curve;
-        }
-
-        void getMappingValues(double& amin, double& amid, double& amax)
-        {
-            fValueConverters[fCurve]->getMappingValues(amin, amid, amax);
-        }
-
-        void setActive(bool on_off)
-        {
-            std::vector<UpdatableValueConverter*>::iterator it;
-            for (it = fValueConverters.begin(); it != fValueConverters.end(); it++) {
-                (*it)->setActive(on_off);
-            }
-        }
-
-        int getCurve() { return fCurve; }
-};
-
-class ZoneReader
-{
-
-    private:
-
-        FAUSTFLOAT* fZone;
-        Interpolator fInterpolator;
-
-    public:
-
-        ZoneReader(FAUSTFLOAT* zone, double lo, double hi) : fZone(zone), fInterpolator(lo, hi, 0, 255) {}
-
-        virtual ~ZoneReader() {}
-
-        int getValue()
-        {
-            return (fZone != nullptr) ? int(fInterpolator(*fZone)) : 127;
-        }
-
-};
-
-#endif
-/**************************  END  ValueConverter.h **************************/
 
 #ifdef _MSC_VER
 #define gsscanf sscanf_s
@@ -4593,17 +4620,25 @@ class uiMidiChanPress : public uiMidiTimedItem {
         
 };
 
-class uiMidiCtrlChange : public uiMidiTimedItem {
+//------------------------------------------------------
+// uiMidiCtrlChange does scale (kLin/kLog/kExp) mapping
+//------------------------------------------------------
+
+class uiMidiCtrlChange : public uiMidiTimedItem, public uiConverter {
     
     private:
     
         int fCtrl;
-        LinearValueConverter fConverter;
  
     public:
 
-        uiMidiCtrlChange(midi* midi_out, int ctrl, GUI* ui, FAUSTFLOAT* zone, FAUSTFLOAT min, FAUSTFLOAT max, bool input = true, int chan = -1)
-            :uiMidiTimedItem(midi_out, ui, zone, input, chan), fCtrl(ctrl), fConverter(0., 127., double(min), double(max))
+        uiMidiCtrlChange(midi* midi_out, int ctrl, GUI* ui,
+                     FAUSTFLOAT* zone,
+                     FAUSTFLOAT min, FAUSTFLOAT max,
+                     bool input = true,
+                     MetaDataUI::Scale scale = MetaDataUI::kLin,
+                     int chan = -1)
+            :uiMidiTimedItem(midi_out, ui, zone, input, chan), uiConverter(scale, 0., 127., min, max), fCtrl(ctrl)
         {}
         virtual ~uiMidiCtrlChange()
         {}
@@ -4612,20 +4647,20 @@ class uiMidiCtrlChange : public uiMidiTimedItem {
         {
             FAUSTFLOAT v = *fZone;
             fCache = v;
-            fMidiOut->ctrlChange(rangeChan(), fCtrl, fConverter.faust2ui(v));
+            fMidiOut->ctrlChange(rangeChan(), fCtrl, fConverter->faust2ui(v));
         }
         
         void modifyZone(FAUSTFLOAT v)
         {
             if (fInputCtrl) {
-                uiItem::modifyZone(FAUSTFLOAT(fConverter.ui2faust(v)));
+                uiItem::modifyZone(FAUSTFLOAT(fConverter->ui2faust(v)));
             }
         }
     
         void modifyZone(double date, FAUSTFLOAT v)
         {
             if (fInputCtrl) {
-                uiMidiTimedItem::modifyZone(date, FAUSTFLOAT(fConverter.ui2faust(v)));
+                uiMidiTimedItem::modifyZone(date, FAUSTFLOAT(fConverter->ui2faust(v)));
             }
         }
 };
@@ -4681,17 +4716,25 @@ class uiMidiPitchWheel : public uiMidiTimedItem {
  
 };
 
-class uiMidiKeyOn : public uiMidiTimedItem {
+//--------------------------------------------------------------
+// uiMidiKeyOn does scale (kLin/kLog/kExp) mapping for velocity
+//--------------------------------------------------------------
+
+class uiMidiKeyOn : public uiMidiTimedItem, public uiConverter {
 
     private:
         
         int fKeyOn;
-        LinearValueConverter fConverter;
   
     public:
     
-        uiMidiKeyOn(midi* midi_out, int key, GUI* ui, FAUSTFLOAT* zone, FAUSTFLOAT min, FAUSTFLOAT max, bool input = true, int chan = -1)
-            :uiMidiTimedItem(midi_out, ui, zone, input, chan), fKeyOn(key), fConverter(0., 127., double(min), double(max))
+        uiMidiKeyOn(midi* midi_out, int key, GUI* ui,
+                    FAUSTFLOAT* zone,
+                    FAUSTFLOAT min, FAUSTFLOAT max,
+                    bool input = true,
+                    MetaDataUI::Scale scale = MetaDataUI::kLin,
+                    int chan = -1)
+            :uiMidiTimedItem(midi_out, ui, zone, input, chan), uiConverter(scale, 0., 127., min, max), fKeyOn(key)
         {}
         virtual ~uiMidiKeyOn()
         {}
@@ -4700,36 +4743,44 @@ class uiMidiKeyOn : public uiMidiTimedItem {
         {
             FAUSTFLOAT v = *fZone;
             fCache = v;
-            fMidiOut->keyOn(rangeChan(), fKeyOn, fConverter.faust2ui(v));
+            fMidiOut->keyOn(rangeChan(), fKeyOn, fConverter->faust2ui(v));
         }
         
         void modifyZone(FAUSTFLOAT v)
         { 
             if (fInputCtrl) {
-                uiItem::modifyZone(FAUSTFLOAT(fConverter.ui2faust(v)));
+                uiItem::modifyZone(FAUSTFLOAT(fConverter->ui2faust(v)));
             }
         }
     
         void modifyZone(double date, FAUSTFLOAT v)
         {
             if (fInputCtrl) {
-                uiMidiTimedItem::modifyZone(date, FAUSTFLOAT(fConverter.ui2faust(v)));
+                uiMidiTimedItem::modifyZone(date, FAUSTFLOAT(fConverter->ui2faust(v)));
             }
         }
     
 };
 
-class uiMidiKeyOff : public uiMidiTimedItem {
+//--------------------------------------------------------------
+// uiMidiKeyOff does scale (kLin/kLog/kExp) mapping for velocity
+//--------------------------------------------------------------
+
+class uiMidiKeyOff : public uiMidiTimedItem, public uiConverter {
 
     private:
         
         int fKeyOff;
-        LinearValueConverter fConverter;
   
     public:
     
-        uiMidiKeyOff(midi* midi_out, int key, GUI* ui, FAUSTFLOAT* zone, FAUSTFLOAT min, FAUSTFLOAT max, bool input = true, int chan = -1)
-            :uiMidiTimedItem(midi_out, ui, zone, input, chan), fKeyOff(key), fConverter(0., 127., double(min), double(max))
+        uiMidiKeyOff(midi* midi_out, int key, GUI* ui,
+                     FAUSTFLOAT* zone,
+                     FAUSTFLOAT min, FAUSTFLOAT max,
+                     bool input = true,
+                     MetaDataUI::Scale scale = MetaDataUI::kLin,
+                     int chan = -1)
+            :uiMidiTimedItem(midi_out, ui, zone, input, chan), uiConverter(scale, 0., 127., min, max), fKeyOff(key)
         {}
         virtual ~uiMidiKeyOff()
         {}
@@ -4738,36 +4789,44 @@ class uiMidiKeyOff : public uiMidiTimedItem {
         {
             FAUSTFLOAT v = *fZone;
             fCache = v;
-            fMidiOut->keyOff(rangeChan(), fKeyOff, fConverter.faust2ui(v));
+            fMidiOut->keyOff(rangeChan(), fKeyOff, fConverter->faust2ui(v));
         }
         
         void modifyZone(FAUSTFLOAT v)
         { 
             if (fInputCtrl) {
-                uiItem::modifyZone(FAUSTFLOAT(fConverter.ui2faust(v)));
+                uiItem::modifyZone(FAUSTFLOAT(fConverter->ui2faust(v)));
             }
         }
     
         void modifyZone(double date, FAUSTFLOAT v)
         {
             if (fInputCtrl) {
-                uiMidiTimedItem::modifyZone(date, FAUSTFLOAT(fConverter.ui2faust(v)));
+                uiMidiTimedItem::modifyZone(date, FAUSTFLOAT(fConverter->ui2faust(v)));
             }
         }
     
 };
 
-class uiMidiKeyPress : public uiMidiTimedItem {
+//----------------------------------------------------------------
+// uiMidiKeyPress does scale (kLin/kLog/kExp) mapping for velocity
+//----------------------------------------------------------------
+
+class uiMidiKeyPress : public uiMidiTimedItem, public uiConverter {
 
     private:
     
         int fKey;
-        LinearValueConverter fConverter;
   
     public:
     
-        uiMidiKeyPress(midi* midi_out, int key, GUI* ui, FAUSTFLOAT* zone, FAUSTFLOAT min, FAUSTFLOAT max, bool input = true, int chan = -1)
-            :uiMidiTimedItem(midi_out, ui, zone, input, chan), fKey(key), fConverter(0., 127., double(min), double(max))
+        uiMidiKeyPress(midi* midi_out, int key, GUI* ui,
+                       FAUSTFLOAT* zone,
+                       FAUSTFLOAT min, FAUSTFLOAT max,
+                       bool input = true,
+                       MetaDataUI::Scale scale = MetaDataUI::kLin,
+                       int chan = -1)
+            :uiMidiTimedItem(midi_out, ui, zone, input, chan), uiConverter(scale, 0., 127., min, max), fKey(key)
         {}
         virtual ~uiMidiKeyPress()
         {}
@@ -4776,20 +4835,20 @@ class uiMidiKeyPress : public uiMidiTimedItem {
         {
             FAUSTFLOAT v = *fZone;
             fCache = v;
-            fMidiOut->keyPress(rangeChan(), fKey, fConverter.faust2ui(v));
+            fMidiOut->keyPress(rangeChan(), fKey, fConverter->faust2ui(v));
         }
         
         void modifyZone(FAUSTFLOAT v)
         { 
             if (fInputCtrl) {
-                uiItem::modifyZone(FAUSTFLOAT(fConverter.ui2faust(v)));
+                uiItem::modifyZone(FAUSTFLOAT(fConverter->ui2faust(v)));
             }
         }
     
         void modifyZone(double date, FAUSTFLOAT v)
         {
             if (fInputCtrl) {
-                uiMidiTimedItem::modifyZone(date, FAUSTFLOAT(fConverter.ui2faust(v)));
+                uiMidiTimedItem::modifyZone(date, FAUSTFLOAT(fConverter->ui2faust(v)));
             }
         }
     
@@ -4808,7 +4867,7 @@ class uiMidiKeyPress : public uiMidiTimedItem {
  *  - sending their internal state as MIDI output events
  *******************************************************************************************/
 
-class MidiUI : public GUI, public midi {
+class MidiUI : public GUI, public midi, public MetaDataUI {
 
     // Add uiItem subclasses objects are deallocated by the inherited GUI class
     typedef std::map <int, std::vector<uiMidiCtrlChange*> > TCtrlChangeTable;
@@ -4848,25 +4907,25 @@ class MidiUI : public GUI, public midi {
                     unsigned chan;
                     if (fMetaAux[i].first == "midi") {
                         if (gsscanf(fMetaAux[i].second.c_str(), "ctrl %u %u", &num, &chan) == 2) {
-                            fCtrlChangeTable[num].push_back(new uiMidiCtrlChange(fMidiHandler, num, this, zone, min, max, input, chan));
+                            fCtrlChangeTable[num].push_back(new uiMidiCtrlChange(fMidiHandler, num, this, zone, min, max, input, getScale(zone), chan));
                         } else if (gsscanf(fMetaAux[i].second.c_str(), "ctrl %u", &num) == 1) {
-                            fCtrlChangeTable[num].push_back(new uiMidiCtrlChange(fMidiHandler, num, this, zone, min, max, input));
+                            fCtrlChangeTable[num].push_back(new uiMidiCtrlChange(fMidiHandler, num, this, zone, min, max, input, getScale(zone)));
                         } else if (gsscanf(fMetaAux[i].second.c_str(), "keyon %u %u", &num, &chan) == 2) {
-                            fKeyOnTable[num].push_back(new uiMidiKeyOn(fMidiHandler, num, this, zone, min, max, input, chan));
+                            fKeyOnTable[num].push_back(new uiMidiKeyOn(fMidiHandler, num, this, zone, min, max, input, getScale(zone), chan));
                         } else if (gsscanf(fMetaAux[i].second.c_str(), "keyon %u", &num) == 1) {
-                            fKeyOnTable[num].push_back(new uiMidiKeyOn(fMidiHandler, num, this, zone, min, max, input));
+                            fKeyOnTable[num].push_back(new uiMidiKeyOn(fMidiHandler, num, this, zone, min, max, input, getScale(zone)));
                         } else if (gsscanf(fMetaAux[i].second.c_str(), "keyoff %u %u", &num, &chan) == 2) {
-                            fKeyOffTable[num].push_back(new uiMidiKeyOff(fMidiHandler, num, this, zone, min, max, input, chan));
+                            fKeyOffTable[num].push_back(new uiMidiKeyOff(fMidiHandler, num, this, zone, min, max, input, getScale(zone), chan));
                         } else if (gsscanf(fMetaAux[i].second.c_str(), "keyoff %u", &num) == 1) {
-                            fKeyOffTable[num].push_back(new uiMidiKeyOff(fMidiHandler, num, this, zone, min, max, input));
+                            fKeyOffTable[num].push_back(new uiMidiKeyOff(fMidiHandler, num, this, zone, min, max, input, getScale(zone)));
                         } else if (gsscanf(fMetaAux[i].second.c_str(), "key %u %u", &num, &chan) == 2) {
-                            fKeyTable[num].push_back(new uiMidiKeyOn(fMidiHandler, num, this, zone, min, max, input, chan));
+                            fKeyTable[num].push_back(new uiMidiKeyOn(fMidiHandler, num, this, zone, min, max, input, getScale(zone), chan));
                         } else if (gsscanf(fMetaAux[i].second.c_str(), "key %u", &num) == 1) {
-                            fKeyTable[num].push_back(new uiMidiKeyOn(fMidiHandler, num, this, zone, min, max, input));
+                            fKeyTable[num].push_back(new uiMidiKeyOn(fMidiHandler, num, this, zone, min, max, input, getScale(zone)));
                         } else if (gsscanf(fMetaAux[i].second.c_str(), "keypress %u %u", &num, &chan) == 2) {
-                            fKeyPressTable[num].push_back(new uiMidiKeyPress(fMidiHandler, num, this, zone, min, max, input, chan));
+                            fKeyPressTable[num].push_back(new uiMidiKeyPress(fMidiHandler, num, this, zone, min, max, input, getScale(zone), chan));
                         } else if (gsscanf(fMetaAux[i].second.c_str(), "keypress %u", &num) == 1) {
-                            fKeyPressTable[num].push_back(new uiMidiKeyPress(fMidiHandler, num, this, zone, min, max, input));
+                            fKeyPressTable[num].push_back(new uiMidiKeyPress(fMidiHandler, num, this, zone, min, max, input, getScale(zone)));
                         } else if (gsscanf(fMetaAux[i].second.c_str(), "pgm %u %u", &num, &chan) == 2) {
                             fProgChangeTable[num].push_back(new uiMidiProgChange(fMidiHandler, num, this, zone, input, chan));
                         } else if (gsscanf(fMetaAux[i].second.c_str(), "pgm %u", &num) == 1) {
@@ -4989,6 +5048,7 @@ class MidiUI : public GUI, public midi {
 
         virtual void declare(FAUSTFLOAT* zone, const char* key, const char* val)
         {
+            MetaDataUI::declare(zone, key, val);
             fMetaAux.push_back(std::make_pair(key, val));
         }
         
@@ -8145,7 +8205,7 @@ class mydspSIG0 {
 	
   private:
 	
-	int iRec6[2];
+	int iRec7[2];
 	
   public:
 	
@@ -8181,16 +8241,16 @@ class mydspSIG0 {
 	}
 	
 	void instanceInitmydspSIG0(int sample_rate) {
-		for (int l6 = 0; (l6 < 2); l6 = (l6 + 1)) {
-			iRec6[l6] = 0;
+		for (int l7 = 0; (l7 < 2); l7 = (l7 + 1)) {
+			iRec7[l7] = 0;
 		}
 	}
 	
 	void fillmydspSIG0(int count, float* table) {
 		for (int i = 0; (i < count); i = (i + 1)) {
-			iRec6[0] = (iRec6[1] + 1);
-			table[i] = std::sin((0.0245436933f * float((iRec6[0] + -1))));
-			iRec6[1] = iRec6[0];
+			iRec7[0] = (iRec7[1] + 1);
+			table[i] = std::sin((0.0245436933f * float((iRec7[0] + -1))));
+			iRec7[1] = iRec7[0];
 		}
 	}
 
@@ -8226,8 +8286,10 @@ class mydsp : public dsp {
 	float fRec5[2];
 	float fRec0[2];
 	FAUSTFLOAT fEntry5;
+	float fRec6[2];
+	FAUSTFLOAT fEntry6;
+	float fRec9[2];
 	float fRec8[2];
-	float fRec7[2];
 	int fSampleRate;
 	
  public:
@@ -8303,7 +8365,8 @@ class mydsp : public dsp {
 		fEntry2 = FAUSTFLOAT(0.001f);
 		fEntry3 = FAUSTFLOAT(0.20000000000000001f);
 		fEntry4 = FAUSTFLOAT(0.69999999999999996f);
-		fEntry5 = FAUSTFLOAT(80.0f);
+		fEntry5 = FAUSTFLOAT(0.80000000000000004f);
+		fEntry6 = FAUSTFLOAT(80.0f);
 	}
 	
 	virtual void instanceClear() {
@@ -8325,11 +8388,14 @@ class mydsp : public dsp {
 		for (int l5 = 0; (l5 < 2); l5 = (l5 + 1)) {
 			fRec0[l5] = 0.0f;
 		}
-		for (int l7 = 0; (l7 < 2); l7 = (l7 + 1)) {
-			fRec8[l7] = 0.0f;
+		for (int l6 = 0; (l6 < 2); l6 = (l6 + 1)) {
+			fRec6[l6] = 0.0f;
 		}
 		for (int l8 = 0; (l8 < 2); l8 = (l8 + 1)) {
-			fRec7[l8] = 0.0f;
+			fRec9[l8] = 0.0f;
+		}
+		for (int l9 = 0; (l9 < 2); l9 = (l9 + 1)) {
+			fRec8[l9] = 0.0f;
 		}
 	}
 	
@@ -8355,10 +8421,11 @@ class mydsp : public dsp {
 		ui_interface->openVerticalBox("percussion");
 		ui_interface->addNumEntry("attack", &fEntry2, 0.00100000005f, 0.00100000005f, 2.0f, 0.00100000005f);
 		ui_interface->addNumEntry("decay", &fEntry3, 0.200000003f, 0.0f, 1.0f, 0.100000001f);
-		ui_interface->addNumEntry("pitch", &fEntry5, 80.0f, 1.0f, 1000.0f, 0.100000001f);
+		ui_interface->addNumEntry("pitch", &fEntry6, 80.0f, 1.0f, 1000.0f, 0.100000001f);
 		ui_interface->addNumEntry("release", &fEntry1, 1.20000005f, 0.0f, 5.0f, 0.100000001f);
 		ui_interface->addNumEntry("sustain", &fEntry4, 0.699999988f, 0.0f, 1.0f, 0.100000001f);
 		ui_interface->addNumEntry("trigger", &fEntry0, 0.0f, 0.0f, 1.0f, 1.0f);
+		ui_interface->addNumEntry("velocity", &fEntry5, 0.800000012f, 0.00999999978f, 1.5f, 0.00999999978f);
 		ui_interface->closeBox();
 	}
 	
@@ -8371,6 +8438,7 @@ class mydsp : public dsp {
 		float fSlow4 = float(iSlow0);
 		float fSlow5 = (0.00100000005f * float(fEntry4));
 		float fSlow6 = (0.00100000005f * float(fEntry5));
+		float fSlow7 = (0.00100000005f * float(fEntry6));
 		for (int i = 0; (i < count); i = (i + 1)) {
 			fRec1[0] = (fSlow1 + (0.999000013f * fRec1[1]));
 			iRec2[0] = (iSlow0 * (iRec2[1] + 1));
@@ -8382,18 +8450,20 @@ class mydsp : public dsp {
 			float fTemp3 = (iTemp2 ? 0.0f : std::exp((0.0f - (2.08333331e-05f / (iTemp2 ? 1.0f : fTemp1)))));
 			fRec5[0] = (fSlow5 + (0.999000013f * fRec5[1]));
 			fRec0[0] = ((fRec0[1] * fTemp3) + ((iSlow0 ? (iTemp0 ? fSlow4 : (fSlow4 * fRec5[0])) : 0.0f) * (1.0f - fTemp3)));
-			fRec8[0] = (fSlow6 + (0.999000013f * fRec8[1]));
-			float fTemp4 = (fRec7[1] + (2.08333331e-05f * fRec8[0]));
-			fRec7[0] = (fTemp4 - std::floor(fTemp4));
-			output0[i] = FAUSTFLOAT((fRec0[0] * ftbl0mydspSIG0[int((256.0f * fRec7[0]))]));
+			fRec6[0] = (fSlow6 + (0.999000013f * fRec6[1]));
+			fRec9[0] = (fSlow7 + (0.999000013f * fRec9[1]));
+			float fTemp4 = (fRec8[1] + (2.08333331e-05f * fRec9[0]));
+			fRec8[0] = (fTemp4 - std::floor(fTemp4));
+			output0[i] = FAUSTFLOAT(((fRec0[0] * fRec6[0]) * ftbl0mydspSIG0[int((256.0f * fRec8[0]))]));
 			fRec1[1] = fRec1[0];
 			iRec2[1] = iRec2[0];
 			fRec3[1] = fRec3[0];
 			fRec4[1] = fRec4[0];
 			fRec5[1] = fRec5[0];
 			fRec0[1] = fRec0[0];
+			fRec6[1] = fRec6[0];
+			fRec9[1] = fRec9[0];
 			fRec8[1] = fRec8[0];
-			fRec7[1] = fRec7[0];
 		}
 	}
 
