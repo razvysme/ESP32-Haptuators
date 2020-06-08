@@ -18,8 +18,8 @@
 // -----------------------------------------------------------------------------
 // WiFi settings
 // -----------------------------------------------------------------------------
-const char* ssid     = "AirLink2b1660";
-const char* password = "gQeYn7WW";
+char* ssid     = "AirLink2b1660";
+char* password = "gQeYn7WW";
 const int recv_port = 10000;
 //const int send_port = 12000;
 // -----------------------------------------------------------------------------
@@ -49,7 +49,7 @@ void setup()
   faustDSP.start();
 
   scanNetworks();
-  connectToNetwork();
+  //connectToNetwork();
 
   configureOSC(recv_port);
 
@@ -97,7 +97,6 @@ void scanNetworks()
   {
     Serial.print("Network name: ");
     Serial.println(WiFi.SSID(i));
- 
     Serial.print("Signal strength: ");
     Serial.println(WiFi.RSSI(i));
  
@@ -107,12 +106,19 @@ void scanNetworks()
     Serial.print("Encryption type: ");
     String encryptionTypeDescription = translateEncryptionType(WiFi.encryptionType(i));
     Serial.println(encryptionTypeDescription);
+
+    if(WiFi.SSID(i)== ssid)
+    {
+      numberOfNetworks = i;
+      Serial.println("Network found");
+      connectToNetwork(ssid, password);
+    }
+    
     Serial.println("-----------------------");
- 
   }
 }
 
-void connectToNetwork() 
+void connectToNetwork(char* ssid, char* password) 
 {
   WiFi.begin(ssid, password);
   while (WiFi.status() != WL_CONNECTED) 
@@ -141,6 +147,22 @@ void configureDAC()
 void configureOverSerial()
 {
     Serial.println(serialInput);
+
+    if ( serialInput.startsWith( "password " ) )
+    {
+      serialInput.remove( 0, 8 );
+      password = &serialInput[0]; //convert to const char* array
+      Serial.print("password changed to: ");
+      Serial.println(password);
+    }
+
+    if ( serialInput.startsWith( "network " ) )
+    {
+      serialInput.remove( 0, 7 );
+      ssid = &serialInput[0]; //convert to const char* array
+      Serial.print("network changed to: ");
+      Serial.println(password);
+    }
 
     if ( serialInput.startsWith( "delay " ) )
     {
