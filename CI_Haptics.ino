@@ -34,7 +34,7 @@ OscWiFi osc; // the OSC client
 percussion faustDSP(sampleRate, 8); //the Faust synth
 
 //temp variables
-float volume = 63.0f;
+float volume = 55.0f;
 int trigger = 0;
 float pitch = 40;
 // -----------------------------------------------------------------------------
@@ -184,7 +184,7 @@ void configureOverSerial()
       volume = serialInput.substring( 0, 6 ).toFloat();
       Serial.println(volume);
       //wm8978.spkVolSet(volume);
-      wm8978.hpVolSet(volume,volume);
+      wm8978.hpVolSet(volume, volume);
     }
 
     if ( serialInput.startsWith( "help" ) )
