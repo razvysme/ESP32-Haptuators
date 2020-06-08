@@ -147,7 +147,9 @@ void configureDAC()
 void configureOverSerial()
 {
     Serial.println(serialInput);
-
+// =============================================================================
+// Admin config
+// =============================================================================
     if ( serialInput.startsWith( "password " ) )
     {
       serialInput.remove( 0, 8 );
@@ -164,6 +166,11 @@ void configureOverSerial()
       Serial.println(password);
     }
 
+    if ( serialInput.startsWith( "ping" ) )
+    {
+    Serial.println(WiFi.localIP());
+    }
+
     if ( serialInput.startsWith( "delay " ) )
     {
       serialInput.remove( 0, 5 );
@@ -171,7 +178,6 @@ void configureOverSerial()
       Serial.println(delayTime);
     }
 
-    
     if ( serialInput.startsWith( "volume " ) )
     {
       serialInput.remove( 0, 6 );
@@ -180,81 +186,170 @@ void configureOverSerial()
       //wm8978.spkVolSet(volume);
       wm8978.hpVolSet(volume,volume);
     }
-    
-    if ( serialInput.startsWith( "pitch " ) )
+
+    if ( serialInput.startsWith( "help" ) )
+
     {
-      serialInput.remove( 0, 5 );
+      Serial.println("Available commands: password, network, ping, delay(loop), volume. For synth commands see readme!");
+    }
+
+// =============================================================================
+// Synth 1
+// =============================================================================
+   
+    if ( serialInput.startsWith( "pitch_1 " ) )
+    {
+      serialInput.remove( 0, 2 );
       pitch = serialInput.substring( 0, 5 ).toInt();
-      faustDSP.setParamValue("pitch", pitch);
+      faustDSP.setParamValue("pitch_1", pitch);
+      Serial.print("Pitch_1: ");
       Serial.println(pitch);
     }
 
-    if ( serialInput.startsWith( "attack " ) )
+    if ( serialInput.startsWith( "attack_1 " ) )
     {
-      serialInput.remove( 0, 6 );
-      faustDSP.setParamValue("attack", serialInput.substring( 0, 5 ).toFloat());
-      Serial.print("Attack changed to ");
+      serialInput.remove( 0, 8 );
+      faustDSP.setParamValue("attack_1", serialInput.substring( 0, 5 ).toFloat());
+      Serial.print("Attack_1 changed to ");
       Serial.println(serialInput);
     }
 
-    if ( serialInput.startsWith( "decay " ) )
-    {
-      serialInput.remove( 0, 5 );
-      faustDSP.setParamValue("decay", serialInput.substring( 0, 5 ).toFloat());
-      Serial.print("Decay changed to ");
-      Serial.println(serialInput);
-    }
-
-    if ( serialInput.startsWith( "sustain " ) )
+    if ( serialInput.startsWith( "decay_1 " ) )
     {
       serialInput.remove( 0, 7 );
-      faustDSP.setParamValue("sustain", serialInput.substring( 0, 5 ).toFloat());
-      Serial.print("Sustain changed to ");
+      faustDSP.setParamValue("decay_1", serialInput.substring( 0, 5 ).toFloat());
+      Serial.print("Decay_1 changed to ");
       Serial.println(serialInput);
     }
 
-    if ( serialInput.startsWith( "release " ) )
+    if ( serialInput.startsWith( "sustain_1 " ) )
     {
-      serialInput.remove( 0, 7 );
-      faustDSP.setParamValue("release", serialInput.substring( 0, 5 ).toFloat());
+      serialInput.remove( 0, 9 );
+      faustDSP.setParamValue("sustain_1", serialInput.substring( 0, 5 ).toFloat());
+      Serial.print("Sustain_1 changed to ");
+      Serial.println(serialInput);
+    }
+
+    if ( serialInput.startsWith( "release_1 " ) )
+    {
+      serialInput.remove( 0, 9 );
+      faustDSP.setParamValue("release_1", serialInput.substring( 0, 5 ).toFloat());
       Serial.print("Release changed to ");
       Serial.println(serialInput);
     }
 
-    if ( serialInput.startsWith( "trigger" ) )
+    if ( serialInput.startsWith( "trigger_1" ) )
     {
-      faustDSP.setParamValue("trigger", 1);
-      Serial.println("triggered");
+      faustDSP.setParamValue("trigger_1", 1);
+      Serial.println("triggered 1");
       delay(10);
-      Serial.println("stopped");
-      faustDSP.setParamValue("trigger", 0);
+      Serial.println("stopped_1");
+      faustDSP.setParamValue("trigger_1", 0);
+    }
+
+    if ( serialInput.startsWith( "pitch_2 " ) )
+    {
+      serialInput.remove( 0, 2 );
+      pitch = serialInput.substring( 0, 5 ).toInt();
+      faustDSP.setParamValue("pitch_2", pitch);
+      Serial.print("Pitch_2: ");
+      Serial.println(pitch);
+    }
+
+    if ( serialInput.startsWith( "attack_2 " ) )
+    {
+      serialInput.remove( 0, 8 );
+      faustDSP.setParamValue("attack_2", serialInput.substring( 0, 5 ).toFloat());
+      Serial.print("Attack_2 changed to ");
+      Serial.println(serialInput);
+    }
+
+    if ( serialInput.startsWith( "decay_2 " ) )
+    {
+      serialInput.remove( 0, 7 );
+      faustDSP.setParamValue("decay_2", serialInput.substring( 0, 5 ).toFloat());
+      Serial.print("Decay_2 changed to ");
+      Serial.println(serialInput);
+    }
+
+    if ( serialInput.startsWith( "sustain_2 " ) )
+    {
+      serialInput.remove( 0, 9 );
+      faustDSP.setParamValue("sustain_2", serialInput.substring( 0, 5 ).toFloat());
+      Serial.print("Sustain_2 changed to ");
+      Serial.println(serialInput);
+    }
+
+    if ( serialInput.startsWith( "release_2 " ) )
+    {
+      serialInput.remove( 0, 9 );
+      faustDSP.setParamValue("release_2", serialInput.substring( 0, 5 ).toFloat());
+      Serial.print("Release changed to ");
+      Serial.println(serialInput);
+    }
+
+    if ( serialInput.startsWith( "trigger_2" ) )
+    {
+      faustDSP.setParamValue("trigger_2", 1);
+      Serial.println("triggered 2");
+      delay(10);
+      Serial.println("stopped_2");
+      faustDSP.setParamValue("trigger_2", 0);
     }
 }
-
+// =============================================================================
+// OSC config
+// =============================================================================
 void configureOSC(int incomingPort)
 {
   osc.begin(incomingPort);
-  osc.subscribe("/trigger", [](OscMessage& m)
+  
+  osc.subscribe("/trigger_1", [](OscMessage& m)
   {
     //trigger, pitch, velocity
-    faustDSP.setParamValue("pitch", m.arg<float>(0));
-    faustDSP.setParamValue("velocity", m.arg<float>(1));
+    faustDSP.setParamValue("pitch_1", m.arg<float>(0));
+    faustDSP.setParamValue("velocity_1", m.arg<float>(1));
     //trigger = 1;
-    faustDSP.setParamValue("trigger", 1);
-    Serial.print("triggered with pitch: "); Serial.print(m.arg<float>(0)); Serial.print(", and velocity ");Serial.print(m.arg<float>(1)); Serial.println();
+    faustDSP.setParamValue("trigger_1", 1);
+    Serial.print("triggered synth 1 with pitch: "); Serial.print(m.arg<float>(0)); Serial.print(", and velocity ");Serial.print(m.arg<float>(1)); Serial.println();
     delay(delayTime);
-    faustDSP.setParamValue("trigger", 0);
+    faustDSP.setParamValue("trigger_1", 0);
   });
   
-
-  osc.subscribe("/adsr", [](OscMessage& m)
+  osc.subscribe("/adsr_1", [](OscMessage& m)
   {
-    faustDSP.setParamValue("attack", m.arg<float>(0));
-    faustDSP.setParamValue("decay", m.arg<float>(1));
-    faustDSP.setParamValue("sustain", m.arg<float>(2));
-    faustDSP.setParamValue("release", m.arg<float>(3));
+    faustDSP.setParamValue("attack_1", m.arg<float>(0));
+    faustDSP.setParamValue("decay_1", m.arg<float>(1));
+    faustDSP.setParamValue("sustain_1", m.arg<float>(2));
+    faustDSP.setParamValue("release_1", m.arg<float>(3));
 
-    Serial.print("ADSR changed to:  ");
+    Serial.print("ADSR_1 changed to:  ");
+    Serial.print(m.arg<float>(0)); Serial.print(" ");
+    Serial.print(m.arg<float>(1)); Serial.print(" ");
+    Serial.print(m.arg<float>(2)); Serial.print(" ");
+    Serial.print(m.arg<float>(3)); Serial.println();
+  });
+
+  osc.subscribe("/trigger_2", [](OscMessage& m)
+  {
+    //trigger, pitch, velocity
+    faustDSP.setParamValue("pitch_2", m.arg<float>(0));
+    faustDSP.setParamValue("velocity_2", m.arg<float>(1));
+    //trigger = 1;
+    faustDSP.setParamValue("trigger_2", 1);
+    Serial.print("triggered synth 2 with pitch: "); Serial.print(m.arg<float>(0)); Serial.print(", and velocity ");Serial.print(m.arg<float>(1)); Serial.println();
+    delay(delayTime);
+    faustDSP.setParamValue("trigger_2", 0);
+  });
+  
+  osc.subscribe("/adsr_2", [](OscMessage& m)
+  {
+    faustDSP.setParamValue("attack_2", m.arg<float>(0));
+    faustDSP.setParamValue("decay_2", m.arg<float>(1));
+    faustDSP.setParamValue("sustain_2", m.arg<float>(2));
+    faustDSP.setParamValue("release_2", m.arg<float>(3));
+
+    Serial.print("ADSR_2 changed to:  ");
     Serial.print(m.arg<float>(0)); Serial.print(" ");
     Serial.print(m.arg<float>(1)); Serial.print(" ");
     Serial.print(m.arg<float>(2)); Serial.print(" ");

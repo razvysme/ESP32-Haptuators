@@ -10,7 +10,7 @@
 		}
 ,
 		"classnamespace" : "box",
-		"rect" : [ 1300.0, 550.0, 1204.0, 770.0 ],
+		"rect" : [ 1036.0, 209.0, 1204.0, 986.0 ],
 		"bglocked" : 0,
 		"openinpresentation" : 0,
 		"default_fontsize" : 12.0,
@@ -39,13 +39,38 @@
 		"subpatcher_template" : "",
 		"boxes" : [ 			{
 				"box" : 				{
+					"id" : "obj-3",
+					"maxclass" : "newobj",
+					"numinlets" : 1,
+					"numoutlets" : 2,
+					"outlettype" : [ "int", "" ],
+					"patching_rect" : [ 987.0, 310.0, 37.0, 22.0 ],
+					"text" : "serial"
+				}
+
+			}
+, 			{
+				"box" : 				{
+					"format" : 6,
+					"id" : "obj-30",
+					"maxclass" : "flonum",
+					"numinlets" : 1,
+					"numoutlets" : 2,
+					"outlettype" : [ "", "bang" ],
+					"parameter_enable" : 0,
+					"patching_rect" : [ 500.0, 717.0, 50.0, 22.0 ]
+				}
+
+			}
+, 			{
+				"box" : 				{
 					"id" : "obj-104",
 					"maxclass" : "newobj",
 					"numinlets" : 6,
 					"numoutlets" : 1,
 					"outlettype" : [ "" ],
-					"patching_rect" : [ 371.0, 675.0, 130.0, 22.0 ],
-					"text" : "scale 0 127 0.1 1.5 0.5"
+					"patching_rect" : [ 371.0, 675.0, 120.0, 22.0 ],
+					"text" : "scale 0 127 0.1 1 0.5"
 				}
 
 			}
@@ -68,8 +93,8 @@
 					"numinlets" : 2,
 					"numoutlets" : 1,
 					"outlettype" : [ "" ],
-					"patching_rect" : [ 686.5, 785.0, 102.0, 22.0 ],
-					"text" : "/adsr $1 $2 $3 $4"
+					"patching_rect" : [ 686.5, 785.0, 115.0, 22.0 ],
+					"text" : "/adsr_1 $1 $2 $3 $4"
 				}
 
 			}
@@ -276,8 +301,8 @@
 					"numinlets" : 2,
 					"numoutlets" : 1,
 					"outlettype" : [ "" ],
-					"patching_rect" : [ 336.0, 756.0, 79.0, 22.0 ],
-					"text" : "/trigger $2 $3"
+					"patching_rect" : [ 336.0, 756.0, 93.0, 22.0 ],
+					"text" : "/trigger_1 $2 $3"
 				}
 
 			}
@@ -288,8 +313,8 @@
 					"numinlets" : 2,
 					"numoutlets" : 1,
 					"outlettype" : [ "" ],
-					"patching_rect" : [ 428.0, 756.0, 129.0, 22.0 ],
-					"text" : "/adsr 0.001 0.2 0.7 2.5"
+					"patching_rect" : [ 686.5, 755.0, 142.0, 22.0 ],
+					"text" : "/adsr_1 0.001 0.2 0.7 2.5"
 				}
 
 			}
@@ -299,7 +324,7 @@
 					"maxclass" : "comment",
 					"numinlets" : 1,
 					"numoutlets" : 0,
-					"patching_rect" : [ 587.0, 756.0, 46.0, 20.0 ],
+					"patching_rect" : [ 807.0, 785.0, 46.0, 20.0 ],
 					"text" : "ADSR"
 				}
 
@@ -322,19 +347,7 @@
 					"numinlets" : 1,
 					"numoutlets" : 0,
 					"patching_rect" : [ 336.0, 794.0, 177.0, 22.0 ],
-					"text" : "udpsend 192.168.38.110 10000"
-				}
-
-			}
-, 			{
-				"box" : 				{
-					"id" : "obj-74",
-					"maxclass" : "toggle",
-					"numinlets" : 1,
-					"numoutlets" : 1,
-					"outlettype" : [ "int" ],
-					"parameter_enable" : 0,
-					"patching_rect" : [ 185.666655999999989, 305.0, 24.0, 24.0 ]
+					"text" : "udpsend 192.168.38.114 10000"
 				}
 
 			}
@@ -900,7 +913,7 @@
 					"fontname" : "Arial",
 					"fontsize" : 13.0,
 					"id" : "obj-22",
-					"items" : [ "Akai Network - MIDI", ",", "Akai Network - DAW Control", ",", "Maschine Controller In", ",", "Razvan-Desktop", ",", "Arturia BeatStep Pro", ",", "MIDIIN2 (Arturia BeatStep Pro)" ],
+					"items" : [ "Akai Network - MIDI", ",", "Akai Network - DAW Control", ",", "Maschine Controller In", ",", "Razvan-Desktop" ],
 					"maxclass" : "umenu",
 					"numinlets" : 1,
 					"numoutlets" : 3,
@@ -942,6 +955,15 @@
 , 			{
 				"patchline" : 				{
 					"destination" : [ "obj-2", 2 ],
+					"order" : 1,
+					"source" : [ "obj-104", 0 ]
+				}
+
+			}
+, 			{
+				"patchline" : 				{
+					"destination" : [ "obj-30", 0 ],
+					"order" : 0,
 					"source" : [ "obj-104", 0 ]
 				}
 
@@ -1169,13 +1191,6 @@
 				"patchline" : 				{
 					"destination" : [ "obj-44", 0 ],
 					"source" : [ "obj-45", 0 ]
-				}
-
-			}
-, 			{
-				"patchline" : 				{
-					"destination" : [ "obj-74", 0 ],
-					"source" : [ "obj-47", 0 ]
 				}
 
 			}
