@@ -166,6 +166,11 @@ void configureOverSerial()
       Serial.println(password);
     }
 
+    if ( serialInput.startsWith( "connect " ) )
+    {
+       connectToNetwork(ssid, password);
+    }
+
     if ( serialInput.startsWith( "ping" ) )
     {
     Serial.println(WiFi.localIP());
